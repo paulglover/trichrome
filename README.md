@@ -1,5 +1,7 @@
 # trichrome
 
+[![Release](https://img.shields.io/github/v/release/paulglover/trichrome?include_prereleases&label=release)](https://github.com/paulglover/trichrome/releases)
+
 Merge red/green/blue-light RAW triplets into 16-bit **linear** TIFFs, then
 (optionally) delete the source RAWs.
 
