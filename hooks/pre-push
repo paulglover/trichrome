@@ -1,0 +1,26 @@
+#!/bin/sh
+# Refuse to push anything to main. main is protected on GitHub (PR required,
+# enforced for admins), so this only makes the failure local and immediate
+# instead of a rejected round trip.
+#
+# stdin gives one line per ref being pushed:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# Matching on the REMOTE ref catches `git push origin mybranch:main` too, not
+# just a push while checked out on main.
+#
+# Escape hatch: git push --no-verify skips this hook.
+
+protected_ref="refs/heads/main"
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	if [ "$remote_ref" = "$protected_ref" ]; then
+		echo "pre-push: refusing to update $protected_ref." >&2
+		echo "  main is protected; land changes through a pull request:" >&2
+		echo "    git switch -c <branch> && git push -u origin <branch>" >&2
+		echo "    gh pr create" >&2
+		echo "  Bypass with --no-verify if you really mean it." >&2
+		exit 1
+	fi
+done
+
+exit 0
