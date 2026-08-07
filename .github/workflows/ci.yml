@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ends of the range declared in pyproject.toml (requires-python >=3.9)
+        # plus one in the middle.
+        python-version: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # rawpy and imagecodecs are real dependencies even here: the suite
+      # monkeypatches the decode, but importing the package still imports them.
+      - run: pip install -e ".[dev]"
+
+      - run: pytest -q
