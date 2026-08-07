@@ -139,12 +139,8 @@ The decode is monkeypatched, so the suite needs no RAW files and runs in about a
 second. It covers the pure merge maths (CFA phase slicing, white-level scaling,
 light order) and every deletion-safety rule above.
 
-## Git hooks
+## Contributing
 
-`hooks/pre-push` refuses to push to `main`, which is protected on GitHub anyway —
-the hook just makes the failure immediate instead of a rejected round trip. Git
-does not pick it up automatically; enable it once per clone:
-
-```bash
-git config core.hooksPath hooks
-```
+`main` takes no direct pushes; changes land through a pull request, and the
+tracked `hooks/` directory needs `git config core.hooksPath hooks` once per
+clone. See [CONTRIBUTING.md](CONTRIBUTING.md).
