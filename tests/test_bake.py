@@ -98,8 +98,8 @@ def test_plan_groups_in_filename_order_and_names_after_the_first_frame(tmp_path)
     assert len(jobs) == 2
     assert [os.path.basename(s) for s in jobs[0].sources] == \
         ["img001.arw", "img002.arw", "img003.arw"]
-    assert os.path.basename(jobs[0].output) == "img001_RGB.tiff"
-    assert os.path.basename(jobs[1].output) == "img004_RGB.tiff"
+    assert os.path.basename(jobs[0].output) == "img001_RGB.tif"
+    assert os.path.basename(jobs[1].output) == "img004_RGB.tif"
 
 
 def test_plan_rejects_a_count_that_is_not_a_multiple_of_three(tmp_path):
@@ -116,9 +116,9 @@ def test_plan_writes_into_out_dir_when_given(tmp_path):
 
 def test_plan_never_reuses_an_existing_filename(tmp_path):
     files = raws(tmp_path, 3)
-    (tmp_path / "img001_RGB.tiff").write_bytes(b"already here")
+    (tmp_path / "img001_RGB.tif").write_bytes(b"already here")
     jobs = bake.plan_jobs(files)
-    assert os.path.basename(jobs[0].output) == "img001_RGB_2.tiff"
+    assert os.path.basename(jobs[0].output) == "img001_RGB_2.tif"
 
 
 def test_plan_reserves_names_so_two_folders_cannot_collide_in_one_out_dir(tmp_path):

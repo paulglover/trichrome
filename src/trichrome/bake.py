@@ -100,7 +100,7 @@ def plan_jobs(paths: Sequence[str], out_dir: Optional[str] = None,
     """Sort, validate and group `paths` into merge jobs with output paths.
 
     Output goes next to the triplet's first frame unless `out_dir` is given, and
-    is named `<first frame stem><suffix>.tiff`. Existing files are never
+    is named `<first frame stem><suffix>.tif`. Existing files are never
     overwritten: a numeric suffix is added, and names claimed earlier in this
     same plan are reserved too (so two triplets from different folders cannot
     collide when writing into one `out_dir`).
@@ -121,7 +121,7 @@ def plan_jobs(paths: Sequence[str], out_dir: Optional[str] = None,
         out = tiff_mod.unique_output_path(folder, stem)
         n = 2
         while os.path.normcase(out) in claimed:      # reserved by an earlier job
-            out = os.path.join(folder, f"{stem}_{n}.tiff")
+            out = os.path.join(folder, f"{stem}_{n}{tiff_mod.OUTPUT_EXTENSION}")
             n += 1
         claimed.add(os.path.normcase(out))
         jobs.append(Job(sources=triplet, output=out))
