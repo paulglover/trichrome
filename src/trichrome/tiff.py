@@ -29,6 +29,9 @@ import tifffile
 # so appending this tool's own identity after it is safe.
 FREECCR_MERGE_TIFF_MARKER = "FreeCCR:3-way-RGB-merge-linear-v1"
 
+# Extension given to every file this tool writes. Reading still accepts .tiff.
+OUTPUT_EXTENSION = ".tif"
+
 
 def software_tag(version: Optional[str] = None) -> str:
     """The Software tag value stamped into a written TIFF: FreeCCR's merge
@@ -91,11 +94,11 @@ def verify_linear_tiff(path: str,
 
 
 def unique_output_path(folder: str, stem: str) -> str:
-    """`folder/stem.tiff`, with a numeric suffix if that name is already taken —
+    """`folder/stem.tif`, with a numeric suffix if that name is already taken —
     this tool NEVER overwrites an existing file."""
-    out = os.path.join(folder, stem + ".tiff")
+    out = os.path.join(folder, stem + OUTPUT_EXTENSION)
     n = 2
     while os.path.exists(out):
-        out = os.path.join(folder, f"{stem}_{n}.tiff")
+        out = os.path.join(folder, f"{stem}_{n}{OUTPUT_EXTENSION}")
         n += 1
     return out

@@ -35,11 +35,11 @@ trichrome merge ./shoot --delete-originals    # destructive; asks first
 ```
 $ trichrome merge ./shoot
 2 triplet(s) · light order RGB · demosaic (full resolution)
-[1/2] img001.arw + img002.arw + img003.arw  ->  img001_RGB.tiff
-[2/2] img004.arw + img005.arw + img006.arw  ->  img004_RGB.tiff
+[1/2] img001.arw + img002.arw + img003.arw  ->  img001_RGB.tif
+[2/2] img004.arw + img005.arw + img006.arw  ->  img004_RGB.tif
 
-wrote /shoot/img001_RGB.tiff  (6024x4024, uint16)
-wrote /shoot/img004_RGB.tiff  (6024x4024, uint16)
+wrote /shoot/img001_RGB.tif  (6024x4024, uint16)
+wrote /shoot/img004_RGB.tif  (6024x4024, uint16)
 
 2 merged, 0 failed
 ```
@@ -50,7 +50,7 @@ wrote /shoot/img004_RGB.tiff  (6024x4024, uint16)
 | --- | --- |
 | `-r, --recursive` | descend into subfolders of an input folder |
 | `-o, --out DIR` | write TIFFs here instead of beside each triplet's first frame |
-| `--suffix S` | output name is `<first frame><S>.tiff` (default `_RGB`) |
+| `--suffix S` | output name is `<first frame><S>.tif` (default `_RGB`) |
 | `--order RGB` | which light each frame of a triplet was shot under, in filename order — `BGR` if you shot blue first |
 | `--demosaic` / `--photosite` | see *Two ways to extract a channel* below (default `--demosaic`) |
 | `--delete-originals` | permanently delete each triplet's RAWs once its TIFF verifies |

@@ -90,7 +90,7 @@ def test_full_cli_run_writes_a_readable_tiff_and_deletes_on_request(triplet,
     shoot, paths, expected = triplet
     assert cli.main(["merge", str(shoot), "--delete-originals", "--yes"]) == 0
 
-    out = str(shoot / "frame1_RGB.tiff")
+    out = str(shoot / "frame1_RGB.tif")
     assert os.path.exists(out)
     data = tifffile.imread(out)
     assert data.shape == (64, 96, 3) and data.dtype == np.uint16
