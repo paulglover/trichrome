@@ -33,7 +33,8 @@ check described next.
 
 `main` is protected on GitHub: it takes no direct pushes, no force pushes and no
 deletions, and the rule is enforced for admins too. Every change lands through a
-pull request, which you can merge yourself — no approving review is required.
+pull request, which you can merge yourself — no approving review is required,
+but CI must be green (see below).
 
 ```bash
 git switch -c my-change
@@ -46,3 +47,25 @@ gh pr create
 The pre-push hook is only a local convenience that fails fast; GitHub's branch
 protection is the actual guarantee, and it holds whether or not the hook is
 installed.
+
+## CI
+
+`.github/workflows/ci.yml` runs `pytest` on every pull request and on pushes to
+`main`, against Python 3.9, 3.11 and 3.13 — the ends of the range declared in
+`pyproject.toml`, plus one in the middle. A run takes well under a minute.
+
+Merging into `main` requires exactly one status check, `ci-ok`. That job does no
+testing of its own: it depends on the whole matrix and passes only when every
+version passed. The indirection is deliberate — branch protection matches checks
+by *name*, so requiring `test (3.9)` and friends directly would mean that
+editing the matrix silently wedges every pull request, waiting forever on a
+check that no longer reports under that name. Requiring `ci-ok` instead leaves
+the matrix free to change.
+
+For the same reason `ci-ok` is marked `if: always()`. A skipped check never
+reports, so without it a failing matrix would hang pull requests rather than
+turning them red.
+
+If you do change the matrix, `ci-ok` needs no update. If you rename the `ci-ok`
+job itself, update the required check on `main` in the same breath or nothing
+will be mergeable.
