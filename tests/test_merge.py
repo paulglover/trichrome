@@ -210,6 +210,81 @@ def test_combine_requires_three_white_levels():
         merge.combine_channels(plane, plane, plane, [1, 1])
 
 
+def test_combine_requires_three_black_levels_when_given_any():
+    plane = np.ones((2, 2), np.float32)
+    with pytest.raises(ValueError):
+        merge.combine_channels(plane, plane, plane, [1, 1, 1], [0, 0])
+
+
+def test_combine_normalises_by_the_usable_range_not_the_white_level():
+    """A black-subtracted plane spans 0..(white - black), so the top of THAT
+    range is what maps to 65535."""
+    plane = np.full((2, 2), 900, np.float32)          # == white - black
+    out = merge.combine_channels(plane, plane, plane, [1000, 1000, 1000],
+                                 [100, 100, 100])
+    assert np.all(out == 65535)
+
+
+def test_combine_without_black_levels_keeps_the_old_white_level_scaling():
+    plane = np.full((2, 2), 500, np.float32)
+    assert np.array_equal(
+        merge.combine_channels(plane, plane, plane, [1000, 1000, 1000]),
+        merge.combine_channels(plane, plane, plane, [1000, 1000, 1000],
+                               [0, 0, 0]))
+
+
+def test_combine_uses_each_frames_own_black_level():
+    """Frames whose pedestals differ must still land together — a per-frame
+    pedestal that leaked into the scaling would tint the merge."""
+    plane = np.full((2, 2), 450, np.float32)          # half of each usable range
+    out = merge.combine_channels(plane, plane, plane, [1000, 1200, 2000],
+                                 [100, 300, 1100])
+    assert out[0, 0, 0] == out[0, 0, 1] == out[0, 0, 2]
+
+
+def test_combine_falls_back_to_unit_scale_on_a_degenerate_range():
+    plane = np.full((2, 2), 7, np.float32)
+    out = merge.combine_channels(plane, plane, plane, [100, 100, 100],
+                                 [100, 200, 0])
+    assert out[0, 0, 0] == 7 and out[0, 0, 1] == 7       # white - black <= 0
+    assert out[0, 0, 2] == int(7 * 65535.0 / 100)
+
+
+# --------------------------------------------------------------------------- #
+# channel_black_level — which pedestal came off which plane
+# --------------------------------------------------------------------------- #
+def test_channel_black_level_reads_the_index_for_red_and_blue():
+    blacks = [10, 20, 30, 40]
+    assert merge.channel_black_level(b"RGBG", "R", blacks) == 10
+    assert merge.channel_black_level(b"RGBG", "B", blacks) == 30
+
+
+def test_channel_black_level_averages_both_green_indices():
+    """b'RGBG' spells G at index 1 AND index 3; a green plane is the mean of
+    those two sites, so its pedestal is the mean of their two black levels."""
+    assert merge.channel_black_level(b"RGBG", "G", [10, 20, 30, 40]) == 30.0
+
+
+def test_channel_black_level_counts_only_the_indices_in_the_cfa_tile():
+    """A tile whose two greens share one index must not average in the unused
+    index 3's pedestal."""
+    tile = np.array([[0, 1], [1, 2]])
+    assert merge.channel_black_level(b"RGBG", "G", [10, 20, 30, 999],
+                                     colors=tile) == 20.0
+
+
+def test_channel_black_level_weights_a_tile_index_by_how_often_it_appears():
+    tile = np.array([[0, 1], [3, 2]])
+    assert merge.channel_black_level(b"RGBG", "G", [10, 20, 30, 40],
+                                     colors=tile) == 30.0
+
+
+def test_channel_black_level_is_zero_when_unknown_or_inapplicable():
+    assert merge.channel_black_level(b"RGBG", "R", None) == 0.0
+    assert merge.channel_black_level(b"G", "R", [10, 20, 30, 40]) == 0.0
+    assert merge.channel_black_level(b"RGBG", "R", []) == 0.0
+
+
 # --------------------------------------------------------------------------- #
 # merge_raw_channels — argument contract (no rawpy needed)
 # --------------------------------------------------------------------------- #
@@ -238,7 +313,7 @@ def test_merge_light_order_selects_which_frame_feeds_which_channel(monkeypatch,
 
     def fake_decode(path, letter, preview=False, demosaic=True):
         asked.append((os.path.basename(path), letter))
-        return np.zeros((4, 4), np.float32), 1000.0, False, (4, 4)
+        return np.zeros((4, 4), np.float32), 1000.0, 0.0, False, (4, 4)
 
     monkeypatch.setattr(merge, "_decode_frame_plane", fake_decode)
     merge.merge_raw_channels(paths, light_order="BGR")
@@ -254,7 +329,7 @@ def test_merge_rejects_mixed_sensor_types(monkeypatch, tmp_path):
     monos = iter([True, False, False])
 
     def fake_decode(path, letter, preview=False, demosaic=True):
-        return np.zeros((4, 4), np.float32), 1000.0, next(monos), (8, 8)
+        return np.zeros((4, 4), np.float32), 1000.0, 0.0, next(monos), (8, 8)
 
     monkeypatch.setattr(merge, "_decode_frame_plane", fake_decode)
     with pytest.raises(ValueError, match="same sensor type"):

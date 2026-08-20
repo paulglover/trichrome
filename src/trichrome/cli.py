@@ -58,7 +58,8 @@ def cmd_merge(args) -> int:
     jobs = _plan(args)
     mode = "demosaic (full resolution)" if args.demosaic else \
            "single photosite (half resolution)"
-    print(f"{len(jobs)} triplet(s) · light order {args.order.upper()} · {mode}")
+    print(f"{len(jobs)} triplet(s) · light order {args.order.upper()} · {mode}"
+          + ("" if args.icc else " · untagged (no ICC)"))
 
     if args.delete_originals and not args.dry_run and not args.yes:
         if not _confirm(jobs):
@@ -72,7 +73,7 @@ def cmd_merge(args) -> int:
     summary = bake_mod.run_jobs(
         jobs, demosaic=args.demosaic, light_order=args.order,
         delete_originals=args.delete_originals, dry_run=args.dry_run,
-        progress_cb=progress)
+        icc=args.icc, progress_cb=progress)
 
     if args.dry_run:
         print(f"\nDry run — nothing written. {len(jobs)} TIFF(s) would be "
@@ -140,6 +141,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "its TIFF is written and verified")
     sp.add_argument("-y", "--yes", action="store_true",
                     help="skip the confirmation prompt for --delete-originals")
+    sp.add_argument("--no-icc", dest="icc", action="store_false",
+                    help="write a strictly untagged TIFF, with no linear ICC "
+                         "profile (pixels are the same either way; without it "
+                         "viewers assume sRGB and show the file dark)")
     sp.add_argument("-n", "--dry-run", action="store_true",
                     help="show what would happen; decode, write and delete "
                          "nothing")

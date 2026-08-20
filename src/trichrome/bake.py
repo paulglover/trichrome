@@ -131,11 +131,15 @@ def plan_jobs(paths: Sequence[str], out_dir: Optional[str] = None,
 def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
              light_order: str = merge_mod.DEFAULT_LIGHT_ORDER,
              delete_originals: bool = False, dry_run: bool = False,
+             icc: bool = True,
              progress_cb: Optional[Callable[[int, int, Job], None]] = None,
              cancel_flag: Optional[Callable[[], bool]] = None) -> Summary:
     """Merge every job, write + verify its linear TIFF, then — only with
     `delete_originals` — permanently delete the source RAWs of the jobs that
     succeeded. See the module docstring for the exact deletion rules.
+
+    `icc` embeds the linear ICC profile in each TIFF (see tiff.py); it changes
+    tags only, never pixels, so it has no bearing on deletion safety.
 
     `progress_cb(index, total, job)` is called before each job starts.
     `cancel_flag()` is polled between jobs; returning True aborts cleanly."""
@@ -157,7 +161,7 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
             merged, full_size = merge_mod.merge_raw_channels(
                 job.sources, preview=False, demosaic=demosaic,
                 light_order=light_order)
-            tiff_mod.write_linear_tiff(job.output, merged)
+            tiff_mod.write_linear_tiff(job.output, merged, icc=icc)
             del merged                        # a full-res 16-bit RGB frame
             tiff_mod.verify_linear_tiff(job.output, expect_shape=full_size)
         except Exception as e:

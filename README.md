@@ -56,6 +56,7 @@ wrote /shoot/img004_RGB.tif  (6024x4024, uint16)
 | `--suffix S` | output name is `<first frame><S>.tif` (default `_RGB`) |
 | `--order RGB` | which light each frame of a triplet was shot under, in filename order — `BGR` if you shot blue first |
 | `--demosaic` / `--photosite` | see *Two ways to extract a channel* below (default `--demosaic`) |
+| `--no-icc` | write a strictly untagged TIFF, with no linear ICC profile |
 | `--delete-originals` | permanently delete each triplet's RAWs once its TIFF verifies |
 | `-y, --yes` | skip the confirmation prompt |
 | `-n, --dry-run` | show what would happen; decode, write and delete nothing |
@@ -69,7 +70,10 @@ Supported RAW: `.cr3 .cr2 .nef .arw .dng .rw2 .orf .raf .srw .pef .3fr`.
 ## How the merge works
 
 Each frame contributes exactly one channel — R from the red-light frame, G from
-green, B from blue — scaled to 16-bit by `65535 / white_level`. No white balance,
+green, B from blue. Each is black-subtracted and then normalised to 16-bit by
+`65535 / (white_level - black_level)` — the sensor's usable range, read from that
+frame's own metadata, so a camera with a large pedestal is not left dark and
+frames with differing pedestals do not drift apart into a cast. No white balance,
 no colour matrix, no gamma, no tone curve, no inversion. The output is
 camera-native linear RGB.
 
@@ -96,12 +100,40 @@ triplet must be the same sensor type.
 ## The output file
 
 A 16-bit RGB TIFF, deflate-compressed with Predictor 2 (lossless, universally
-readable, ~1.3–2× smaller than plain deflate on 16-bit continuous-tone data), no
-ICC profile, linear.
+readable, ~1.3–2× smaller than plain deflate on 16-bit continuous-tone data),
+linear, carrying a linear ICC profile.
 
 Its `Software` tag carries FreeCCR's merge marker
 (`FreeCCR:3-way-RGB-merge-linear-v1`), so a file this tool writes opens in
 FreeCCR as a normal image even while FreeCCR's own 3-way merge mode is on.
+
+### Why it carries a profile
+
+The data is scene-linear. Nothing in a bare TIFF says so, so a colour-managed
+viewer assumes sRGB and decodes the linear numbers through an sRGB curve — which
+shows a perfectly good merge about **1.4 stops dark at the midtones** and nearly
+3 in the shadows. A linear 0.18 midtone sits at 46/255 in the file and should
+display around 118/255; untagged, it displays at 46.
+
+So each TIFF gets a 568-byte ICC v2 profile whose three tone curves are the
+identity. Be clear about what it does and does not claim:
+
+* **The tone curve is exact.** The data really is linear, and `curv` with a count
+  of zero is the ICC spelling of "identity" — not a gamma of 1.0 approximated by
+  a sampled table.
+* **The primaries are a convention, not a measurement.** A merge is camera-native
+  RGB, and it is not colorimetric anyway: each channel came from a separate
+  exposure under its own narrow-band light, at whatever relative brightness those
+  lights happened to have. No matrix profile can describe that honestly. An ICC
+  matrix/TRC profile has to name primaries, so this one names sRGB's — the
+  ordinary scene-linear working-space assumption, and the one least likely to
+  send a converter through a bogus colorimetric transform.
+
+Trust the curve, treat the primaries as a placeholder, and let your converter
+apply its own camera profile as it always did.
+
+The profile is metadata only: **the image data is byte-identical with or without
+it.** `--no-icc` leaves it out if you want a strictly untagged file.
 
 ## Deleting the originals
 
@@ -129,7 +161,9 @@ print(len(summary.written), "merged;", len(summary.failures), "failed")
 ```
 
 `merge_raw_channels(sources, demosaic=True, light_order="RGB")` returns
-`(uint16 HxWx3 array, (H, W))` if you just want the pixels.
+`(uint16 HxWx3 array, (H, W))` if you just want the pixels. `run_jobs(...,
+icc=False)` is the library spelling of `--no-icc`, and `linear_rgb_profile()`
+hands you the profile bytes on their own.
 
 ## Tests
 
@@ -139,8 +173,11 @@ pytest
 ```
 
 The decode is monkeypatched, so the suite needs no RAW files and runs in about a
-second. It covers the pure merge maths (CFA phase slicing, white-level scaling,
-light order) and every deletion-safety rule above.
+second. It covers the pure merge maths (CFA phase slicing, black/white-level
+normalisation, light order), the ICC profile field by field, and every
+deletion-safety rule above. Where Pillow is installed — it is in the `dev`
+extra — the profile is also handed to littleCMS to confirm an independent colour
+engine accepts it and applies the linear curve.
 
 ## Contributing
 

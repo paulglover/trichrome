@@ -18,7 +18,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+# Pillow is here only so the suite can hand the ICC profile trichrome builds
+# to an independent CMM (littleCMS, via PIL.ImageCms) and confirm a real
+# implementation accepts it. Nothing in the package imports it.
+dev = ["pytest>=7", "Pillow"]
 
 [project.scripts]
 trichrome = "trichrome.cli:main"
