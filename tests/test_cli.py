@@ -56,22 +56,21 @@ def test_dry_run_reports_the_plan_without_writing(tmp_path, capsys, fake_decode)
     assert fake_decode.calls == []
 
 
-def test_delete_originals_without_yes_aborts_when_stdin_is_not_a_tty(tmp_path,
-                                                                     capsys,
-                                                                     fake_decode):
+def test_delete_originals_deletes_without_asking(tmp_path, capsys, fake_decode):
     files = raws(tmp_path, 3)
-    code = cli.main(["merge", str(tmp_path), "--delete-originals"])
-    assert code == 1
-    assert "Aborted" in capsys.readouterr().out
-    assert all(os.path.exists(f) for f in files)   # nothing touched
-    assert fake_decode.calls == []
-
-
-def test_delete_originals_with_yes_deletes(tmp_path, capsys, fake_decode):
-    files = raws(tmp_path, 3)
-    assert cli.main(["merge", str(tmp_path), "--delete-originals", "--yes"]) == 0
+    assert cli.main(["merge", str(tmp_path), "--delete-originals"]) == 0
     assert "deleted 3 source RAW(s)" in capsys.readouterr().out
     assert not any(os.path.exists(f) for f in files)
+
+
+def test_delete_originals_deletes_nothing_on_a_dry_run(tmp_path, capsys,
+                                                       fake_decode):
+    files = raws(tmp_path, 3)
+    assert cli.main(["merge", str(tmp_path), "--delete-originals",
+                     "--dry-run"]) == 0
+    assert "Dry run" in capsys.readouterr().out
+    assert all(os.path.exists(f) for f in files)
+    assert fake_decode.calls == []
 
 
 def test_a_bad_light_order_fails_before_anything_is_read(tmp_path, capsys):

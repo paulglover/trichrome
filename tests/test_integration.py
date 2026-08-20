@@ -139,7 +139,7 @@ def test_frames_with_different_pedestals_do_not_tint_the_merge(tmp_path):
 def test_full_cli_run_writes_a_readable_tiff_and_deletes_on_request(triplet,
                                                                     capsys):
     shoot, paths, expected = triplet
-    assert cli.main(["merge", str(shoot), "--delete-originals", "--yes"]) == 0
+    assert cli.main(["merge", str(shoot), "--delete-originals"]) == 0
 
     out = str(shoot / "frame1_RGB.tif")
     assert os.path.exists(out)

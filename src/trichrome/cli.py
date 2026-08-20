@@ -3,7 +3,7 @@ Command-line interface.
 
     trichrome merge ./shoot                     # write TIFFs, keep the RAWs
     trichrome merge ./shoot --out ./merged
-    trichrome merge ./shoot --delete-originals  # destructive; asks first
+    trichrome merge ./shoot --delete-originals  # destructive; no prompt
     trichrome merge ./shoot --dry-run           # show the plan only
     trichrome list ./shoot                      # show the triplet grouping
 """
@@ -29,23 +29,6 @@ def _plan(args) -> List[bake_mod.Job]:
     return bake_mod.plan_jobs(paths, out_dir=args.out, suffix=args.suffix)
 
 
-def _confirm(jobs: List[bake_mod.Job]) -> bool:
-    """Ask before a destructive run. Non-interactive stdin declines rather than
-    guessing — --yes is the way to say yes without a terminal."""
-    n_raw = len(jobs) * merge_mod.MERGE_GROUP_SIZE
-    print(f"\n!! --delete-originals will PERMANENTLY delete {n_raw} source RAW "
-          f"file(s)\n   after each of the {len(jobs)} TIFF(s) is written and "
-          f"verified. This cannot be undone.")
-    if not sys.stdin.isatty():
-        print("   stdin is not a terminal — re-run with --yes to confirm.")
-        return False
-    try:
-        return input("   Type 'delete' to proceed: ").strip().lower() == "delete"
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-
-
 def cmd_list(args) -> int:
     jobs = _plan(args)
     print(f"{len(jobs)} triplet(s), light order {args.order.upper()}:")
@@ -60,11 +43,6 @@ def cmd_merge(args) -> int:
            "single photosite (half resolution)"
     print(f"{len(jobs)} triplet(s) · light order {args.order.upper()} · {mode}"
           + ("" if args.icc else " · untagged (no ICC)"))
-
-    if args.delete_originals and not args.dry_run and not args.yes:
-        if not _confirm(jobs):
-            print("Aborted — nothing was written or deleted.")
-            return 1
 
     def progress(i, total, job):
         print(f"[{i + 1}/{total}] {_fmt_triplet(job).strip()}  ->  "
@@ -139,8 +117,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--delete-originals", action="store_true",
                     help="PERMANENTLY delete each triplet's source RAWs after "
                          "its TIFF is written and verified")
-    sp.add_argument("-y", "--yes", action="store_true",
-                    help="skip the confirmation prompt for --delete-originals")
     sp.add_argument("--no-icc", dest="icc", action="store_false",
                     help="write a strictly untagged TIFF, with no linear ICC "
                          "profile (pixels are the same either way; without it "
