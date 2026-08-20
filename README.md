@@ -32,7 +32,7 @@ trichrome list ./shoot                        # show the triplet grouping first
 trichrome merge ./shoot                       # write TIFFs, keep the RAWs
 trichrome merge ./shoot --out ./merged        # write them somewhere else
 trichrome merge ./shoot --dry-run             # plan only, decode nothing
-trichrome merge ./shoot --delete-originals    # destructive; asks first
+trichrome merge ./shoot --delete-originals    # destructive; no prompt
 ```
 
 ```
@@ -58,7 +58,6 @@ wrote /shoot/img004_RGB.tif  (6024x4024, uint16)
 | `--demosaic` / `--photosite` | see *Two ways to extract a channel* below (default `--demosaic`) |
 | `--no-icc` | write a strictly untagged TIFF, with no linear ICC profile |
 | `--delete-originals` | permanently delete each triplet's RAWs once its TIFF verifies |
-| `-y, --yes` | skip the confirmation prompt |
 | `-n, --dry-run` | show what would happen; decode, write and delete nothing |
 
 Files are ordered by **filename** (directory ignored, case-insensitive) and taken
@@ -147,8 +146,8 @@ it.** `--no-icc` leaves it out if you want a strictly untagged file.
 * A failed triplet leaves no partial TIFF behind.
 * Interrupting deletes nothing and removes the TIFFs written so far.
 * An existing file is **never** overwritten; a numeric suffix is added instead.
-* Without a terminal (a script, a pipe) the confirmation prompt declines rather
-  than guessing — pass `--yes` to mean it.
+* There is no confirmation prompt: passing the flag is the confirmation. Use
+  `--dry-run` first to see exactly which files a run would delete.
 
 ## As a library
 
