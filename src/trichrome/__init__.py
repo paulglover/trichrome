@@ -14,10 +14,12 @@ Public API:
 __version__ = "0.2.1"
 
 from .bake import Job, JobResult, Summary, collect_raw_files, plan_jobs, run_jobs
+from .icc import linear_rgb_profile
 from .merge import (MERGE_GROUP_SIZE, RAW_EXTENSIONS, combine_channels,
                     group_into_triplets, is_raw_path, merge_raw_channels,
                     sort_for_merge, validate_merge_inputs)
-from .tiff import (is_merge_tiff, verify_linear_tiff, write_linear_tiff)
+from .tiff import (embedded_icc_profile, is_merge_tiff, verify_linear_tiff,
+                   write_linear_tiff)
 
 __all__ = [
     "__version__",
@@ -25,5 +27,6 @@ __all__ = [
     "MERGE_GROUP_SIZE", "RAW_EXTENSIONS", "combine_channels",
     "group_into_triplets", "is_raw_path", "merge_raw_channels",
     "sort_for_merge", "validate_merge_inputs",
-    "is_merge_tiff", "verify_linear_tiff", "write_linear_tiff",
+    "embedded_icc_profile", "is_merge_tiff", "linear_rgb_profile",
+    "verify_linear_tiff", "write_linear_tiff",
 ]

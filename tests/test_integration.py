@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from trichrome import bake, cli, merge
+from trichrome import bake, cli, icc, merge, tiff
 
 rawpy = pytest.importorskip("rawpy")
 
@@ -148,3 +148,18 @@ def test_full_cli_run_writes_a_readable_tiff_and_deletes_on_request(triplet,
     for ch, want in enumerate(expected):
         assert abs(int(data[8:-8, 8:-8, ch].mean()) - want) <= 1
     assert not any(os.path.exists(p) for p in paths)     # RAWs gone
+    assert tiff.embedded_icc_profile(out) == icc.linear_rgb_profile()
+
+
+def test_cli_no_icc_writes_the_same_pixels_without_the_profile(tmp_path):
+    shoot = tmp_path / "shoot"
+    shoot.mkdir()
+    write_triplet(shoot)
+    assert cli.main(["merge", str(shoot), "--no-icc"]) == 0
+    untagged = str(shoot / "frame1_RGB.tif")
+    assert tiff.embedded_icc_profile(untagged) is None
+
+    assert cli.main(["merge", str(shoot)]) == 0
+    tagged = str(shoot / "frame1_RGB_2.tif")            # never overwrites
+    assert tiff.embedded_icc_profile(tagged) == icc.linear_rgb_profile()
+    assert np.array_equal(tifffile.imread(untagged), tifffile.imread(tagged))

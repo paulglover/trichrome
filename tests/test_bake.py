@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from trichrome import bake, merge, tiff
+from trichrome import bake, icc, merge, tiff
 
 
 class FakeDecoder:
@@ -147,6 +147,42 @@ def test_written_tiff_carries_the_freeccr_marker(tmp_path, fake_decode):
     assert tiff.is_merge_tiff(jobs[0].output)
     with tifffile.TiffFile(jobs[0].output) as tf:
         assert tiff.FREECCR_MERGE_TIFF_MARKER in tf.pages[0].tags["Software"].value
+
+
+def test_written_tiff_carries_the_linear_icc_profile(tmp_path, fake_decode):
+    jobs = bake.plan_jobs(raws(tmp_path, 3))
+    bake.run_jobs(jobs)
+    assert tiff.embedded_icc_profile(jobs[0].output) == icc.linear_rgb_profile()
+
+
+def test_icc_false_writes_an_untagged_tiff(tmp_path, fake_decode):
+    jobs = bake.plan_jobs(raws(tmp_path, 3))
+    bake.run_jobs(jobs, icc=False)
+    assert tiff.embedded_icc_profile(jobs[0].output) is None
+
+
+def test_the_profile_changes_tags_only_and_never_a_pixel(tmp_path, fake_decode):
+    """The archival promise: embedding the profile must leave the image data
+    bit-for-bit what the merge produced."""
+    tagged = bake.plan_jobs(raws(tmp_path, 3, folder="a"))
+    untagged = bake.plan_jobs(raws(tmp_path, 3, folder="b"))
+    bake.run_jobs(tagged, icc=True)
+    bake.run_jobs(untagged, icc=False)
+    assert np.array_equal(tifffile.imread(tagged[0].output),
+                          tifffile.imread(untagged[0].output))
+
+
+def test_the_profile_does_not_disturb_the_freeccr_marker(tmp_path, fake_decode):
+    jobs = bake.plan_jobs(raws(tmp_path, 3))
+    bake.run_jobs(jobs)
+    assert tiff.is_merge_tiff(jobs[0].output)
+
+
+def test_embedded_icc_profile_is_none_for_a_tiff_written_by_anything_else(
+        tmp_path):
+    plain = str(tmp_path / "plain.tif")
+    tifffile.imwrite(plain, np.zeros((4, 4, 3), np.uint16), photometric="rgb")
+    assert tiff.embedded_icc_profile(plain) is None
 
 
 def test_run_forwards_demosaic_and_light_order_to_the_decoder(tmp_path, fake_decode):
