@@ -44,10 +44,15 @@ def rggb_mosaic(h, w, r, g, b):
     return m
 
 
-def write_triplet(folder, h=64, w=96, white=4095):
+def write_triplet(folder, h=64, w=96, white=4095, black=0):
     """Three DNGs simulating a trichrome shoot. Each frame is lit by one colour,
     so its OWN channel is bright and the other two sit at a low floor — a merge
     that took the wrong channel, or leaked between channels, shows up plainly.
+
+    `black` puts a pedestal under every site, as a real sensor does: the recorded
+    signal levels below are what sits ABOVE it, so raising it must not change the
+    merged output at all (the merge subtracts it and normalises by the usable
+    range white - black, not by white).
 
     Returns (paths, expected_rgb) where expected_rgb is the 16-bit value each
     output channel must carry."""
@@ -58,7 +63,8 @@ def write_triplet(folder, h=64, w=96, white=4095):
     for name, (r, g, b) in levels.items():
         p = str(folder / name) if hasattr(folder, "__truediv__") else \
             f"{folder}/{name}"
-        write_cfa_dng(p, rggb_mosaic(h, w, r, g, b), white=white)
+        write_cfa_dng(p, rggb_mosaic(h, w, r + black, g + black, b + black),
+                      white=white + black, black=black)
         paths.append(p)
     scale = 65535.0 / white
     expected = (int(2000 * scale), int(3000 * scale), int(1000 * scale))

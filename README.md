@@ -69,7 +69,10 @@ Supported RAW: `.cr3 .cr2 .nef .arw .dng .rw2 .orf .raf .srw .pef .3fr`.
 ## How the merge works
 
 Each frame contributes exactly one channel — R from the red-light frame, G from
-green, B from blue — scaled to 16-bit by `65535 / white_level`. No white balance,
+green, B from blue. Each is black-subtracted and then normalised to 16-bit by
+`65535 / (white_level - black_level)` — the sensor's usable range, read from that
+frame's own metadata, so a camera with a large pedestal is not left dark and
+frames with differing pedestals do not drift apart into a cast. No white balance,
 no colour matrix, no gamma, no tone curve, no inversion. The output is
 camera-native linear RGB.
 

@@ -29,9 +29,15 @@ Two sensor kinds are supported:
   fact the ideal trichrome sensor (no wasted photosites, full resolution).
 
 Either way each frame contributes exactly one channel (R from the red-light
-frame, G from green, B from blue), scaled to 16-bit by 65535/white_level. The
-result is camera-native linear RGB — no white balance, no colour matrix, no
-gamma, no tone curve.
+frame, G from green, B from blue). Every plane reaches `combine_channels`
+already black-subtracted (by libraw on the demosaic path, per site on the
+photosite one), so it is normalised to 16-bit by 65535/(white_level -
+black_level) — the sensor's USABLE range, not its raw code range. Dividing by
+the un-subtracted white_level would leave every channel short by
+black_level/white_level (~3% on a 512/16383 sensor, ~12.5% on a 2048/16383 one)
+and, because the pedestal can differ per frame, would tint the merge as well as
+darken it. The result is camera-native linear RGB — no white balance, no colour
+matrix, no gamma, no tone curve.
 
 Everything except `merge_raw_channels` is pure and unit-testable without rawpy.
 """
@@ -135,23 +141,35 @@ def bayer_channel_indices(color_desc) -> Tuple[int, int, int]:
 
 
 def combine_channels(plane_r: np.ndarray, plane_g: np.ndarray, plane_b: np.ndarray,
-                     white_levels: Sequence[float]) -> np.ndarray:
+                     white_levels: Sequence[float],
+                     black_levels: Optional[Sequence[float]] = None) -> np.ndarray:
     """Pure merge core: take the red frame's R-plane, the green frame's G-plane,
     and the blue frame's B-plane (each a 2-D array, already the correct channel),
-    scale each by 65535/white_level, and stack into one (H, W, 3) uint16 RGB
-    image.
+    normalise each to 16-bit, and stack into one (H, W, 3) uint16 RGB image.
+
+    `black_levels` is the pedestal ALREADY REMOVED from each plane before it got
+    here — nothing further is subtracted. It only fixes the divisor: a
+    black-subtracted plane spans 0..(white_level - black_level), so that, not
+    white_level, is what maps to 65535. Passing no black levels reproduces the
+    old 65535/white_level scaling, which under-exposes every channel by
+    black_level/white_level.
 
     Planes may differ slightly in size; all are cropped to the common (min H,
     min W). Returns linear RGB in [0, 65535]."""
     planes = [plane_r, plane_g, plane_b]
     if len(white_levels) != 3:
         raise ValueError("white_levels must have 3 entries (R, G, B)")
+    if black_levels is None:
+        black_levels = (0.0, 0.0, 0.0)
+    elif len(black_levels) != 3:
+        raise ValueError("black_levels must have 3 entries (R, G, B)")
     h = min(p.shape[0] for p in planes)
     w = min(p.shape[1] for p in planes)
     out = np.empty((h, w, 3), dtype=np.uint16)
-    for i, (plane, wl) in enumerate(zip(planes, white_levels)):
+    for i, (plane, wl, bl) in enumerate(zip(planes, white_levels, black_levels)):
         cropped = plane[:h, :w].astype(np.float32)
-        scale = 65535.0 / wl if wl and wl > 0 else 1.0
+        span = (wl or 0.0) - (bl or 0.0)
+        scale = 65535.0 / span if span > 0 else 1.0
         out[..., i] = np.clip(cropped * scale, 0, 65535).astype(np.uint16)
     return out
 
@@ -179,6 +197,43 @@ def is_monochrome_sensor(num_colors, color_desc, raw_pattern=None) -> bool:
         except Exception:
             pass
     return False
+
+
+def channel_black_level(color_desc, letter: str, black_levels,
+                        colors=None) -> float:
+    """The black pedestal that has ALREADY been removed from the `letter` plane,
+    so `combine_channels` can divide by the usable range instead of the raw one.
+
+    A plane is the mean of the sites that carry `letter`, so its pedestal is the
+    mean of THEIR black levels — which matters for green, whose two sites may sit
+    at different libraw colour indices (b'RGBG' -> 1 and 3) with different
+    pedestals. Sites are counted with multiplicity, exactly as
+    `extract_cfa_channel` averages them.
+
+    `colors` is a CFA colour-index map (`raw_colors_visible`, or the 2x2
+    `raw_pattern` — only the 2x2 tile is read, and only WHICH indices it holds,
+    not where they sit, so either origin phase gives the same answer). Without it
+    every index in `color_desc` spelling `letter` is used. Returns 0.0 when the black
+    levels are unknown or none of them apply.
+
+    NB this sees only libraw's per-channel pedestal. A camera that encodes black
+    as a 2-D cblack PATTERN instead reports zeros here — but rawpy leaves that
+    pedestal in `raw_image_visible` too, so both paths then agree on 0 and the
+    merge stays self-consistent; it is simply uncorrected, exactly as before.
+
+    Pure — unit-testable without rawpy."""
+    if black_levels is None:
+        return 0.0
+    desc = _desc_bytes(color_desc).decode("ascii", "ignore").upper()
+    letter = letter.upper()
+    if colors is not None:
+        tile = np.asarray(colors)[:2, :2].ravel()
+        indices = [int(v) for v in tile
+                   if 0 <= int(v) < len(desc) and desc[int(v)] == letter]
+    else:
+        indices = [i for i, ch in enumerate(desc) if ch == letter]
+    vals = [float(black_levels[i]) for i in indices if i < len(black_levels)]
+    return sum(vals) / len(vals) if vals else 0.0
 
 
 def extract_cfa_channel(mosaic: np.ndarray, colors: np.ndarray, color_desc,
@@ -221,8 +276,13 @@ def extract_cfa_channel(mosaic: np.ndarray, colors: np.ndarray, color_desc,
 
 def _decode_frame_plane(path: str, letter: str, preview: bool = False,
                         demosaic: bool = True):
-    """Decode one source RAW and return (plane_2d, white_level, is_mono,
-    sensor_full) for the single colour `letter` (R/G/B) this frame contributes.
+    """Decode one source RAW and return (plane_2d, white_level, black_level,
+    is_mono, sensor_full) for the single colour `letter` (R/G/B) this frame
+    contributes.
+
+    `plane_2d` is ALWAYS black-subtracted, and `black_level` is the pedestal that
+    was taken off it, so `combine_channels` can normalise by the usable range
+    (white_level - black_level) rather than the raw code range.
 
     * Bayer, demosaic=False: read the RAW Bayer mosaic directly
       (`raw.raw_image_visible`) and take ONLY this frame's colour photosites — no
@@ -248,9 +308,18 @@ def _decode_frame_plane(path: str, letter: str, preview: bool = False,
         color_desc = getattr(raw, "color_desc", b"")
         pattern = getattr(raw, "raw_pattern", None)
 
+        # Read before postprocess, which invalidates libraw's raw buffers. Both
+        # paths need it: the photosite one to subtract the pedestal itself, the
+        # demosaic one to know what libraw already subtracted.
+        try:
+            black_levels = list(raw.black_level_per_channel)
+        except Exception:
+            black_levels = None
+
         # Identical decode kwargs for both postprocess paths: linear, absolute
-        # sensor values (no_auto_scale — combine_channels scales by white_level),
-        # black-subtracted by libraw, camera-native primaries, no WB.
+        # sensor values (no_auto_scale — combine_channels normalises by the usable
+        # white_level - black_level range), black-subtracted by libraw,
+        # camera-native primaries, no WB.
         linear_kwargs = dict(
             output_bps=16,
             no_auto_bright=True,
@@ -267,9 +336,12 @@ def _decode_frame_plane(path: str, letter: str, preview: bool = False,
         )
 
         if is_monochrome_sensor(num_colors, color_desc, pattern):
+            # One colour, so one pedestal: libraw's colour index 0.
+            black_level = float(black_levels[0]) if black_levels else 0.0
             rgb = raw.postprocess(**linear_kwargs)
             plane = rgb if rgb.ndim == 2 else rgb[..., 0]   # channels are equal
-            return np.ascontiguousarray(plane), white_level, True, sensor_full
+            return (np.ascontiguousarray(plane), white_level, black_level, True,
+                    sensor_full)
 
         # Bayer (RGGB): require a 3-colour 2x2 R/G/B mosaic.
         if num_colors != 3:
@@ -284,20 +356,24 @@ def _decode_frame_plane(path: str, letter: str, preview: bool = False,
         channel_indices = bayer_channel_indices(color_desc)  # raises if not R/G/B
 
         if demosaic:
+            # libraw subtracts the pedestal itself here; `pattern` (2x2) names the
+            # colour indices whose pedestals ended up in this plane, without
+            # materialising a full-frame raw_colors_visible.
+            black_level = channel_black_level(color_desc, letter, black_levels,
+                                              colors=pattern)
             rgb = raw.postprocess(**linear_kwargs)
             plane = rgb[..., channel_indices["RGB".index(letter.upper())]]
-            return (np.ascontiguousarray(plane), white_level, False, sensor_full)
+            return (np.ascontiguousarray(plane), white_level, black_level, False,
+                    sensor_full)
 
         mosaic = np.asarray(raw.raw_image_visible)
         colors = np.asarray(raw.raw_colors_visible)
-        try:
-            black_levels = list(raw.black_level_per_channel)
-        except Exception:
-            black_levels = None
+        black_level = channel_black_level(color_desc, letter, black_levels,
+                                          colors=colors)
         plane = extract_cfa_channel(mosaic, colors, color_desc, letter,
                                     black_levels=black_levels)
         plane = np.clip(plane, 0, None)
-        return (np.ascontiguousarray(plane), white_level, False,
+        return (np.ascontiguousarray(plane), white_level, black_level, False,
                 (plane.shape[0], plane.shape[1]))
 
 
@@ -319,6 +395,10 @@ def merge_raw_channels(sources: Sequence[str], preview: bool = False,
     `preview` lets a monochrome or demosaic decode run at half size for a fast
     check (the photosite read is already cheap and ignores it).
 
+    Each plane is black-subtracted and then normalised to 16-bit by
+    65535/(white_level - black_level) — its frame's own usable range, read from
+    that frame's own metadata.
+
     Returns (merged_rgb, full_size=(H, W)) where full_size is the merged image's
     canonical FULL (export) resolution. Raises ValueError on an unsupported
     sensor or a decode failure."""
@@ -333,14 +413,16 @@ def merge_raw_channels(sources: Sequence[str], preview: bool = False,
 
     planes: List[np.ndarray] = []
     white_levels: List[float] = []
+    black_levels: List[float] = []
     monos: List[bool] = []
     sensor_full: Optional[Tuple[int, int]] = None
     for out_ch, letter in enumerate("RGB"):
         path = sources[frame_for[out_ch]]
-        plane, white_level, mono, sfull = _decode_frame_plane(
+        plane, white_level, black_level, mono, sfull = _decode_frame_plane(
             path, letter, preview, demosaic=demosaic)
         planes.append(plane)
         white_levels.append(white_level)
+        black_levels.append(black_level)
         monos.append(mono)
         if sensor_full is None:
             sensor_full = sfull
@@ -353,7 +435,8 @@ def merge_raw_channels(sources: Sequence[str], preview: bool = False,
         raise ValueError("trichrome merge sources must all be the same sensor "
                          "type (all Bayer, or all monochrome).")
 
-    merged = combine_channels(planes[0], planes[1], planes[2], white_levels)
+    merged = combine_channels(planes[0], planes[1], planes[2], white_levels,
+                              black_levels)
     # Canonical FULL resolution: full sensor for monochrome and for a demosaiced
     # Bayer merge (both may decode a half-size preview while their real
     # resolution is the full sensor); the 2x2-binned size for a photosite Bayer
