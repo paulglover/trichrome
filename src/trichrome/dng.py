@@ -199,8 +199,13 @@ def write_linear_dng(path: str, merged: np.ndarray,
             tw.write(_thumbnail(merged), photometric="rgb", compression=None,
                      subfiletype=1, subifds=1, extratags=ifd0_tags,
                      software=tiff_mod.software_tag(version))
+            # planarconfig is stated rather than left to be inferred: 34892 is
+            # not a photometric tifffile treats as having samples, so without
+            # this the (H, W, 3) array is written as H pages of W x 3 grey
+            # instead of one RGB image — and DNG requires chunky data anyway.
             tw.write(merged, photometric=PHOTOMETRIC_LINEAR_RAW,
-                     compression=None, subfiletype=0, extratags=raw_tags)
+                     planarconfig="contig", compression=None, subfiletype=0,
+                     extratags=raw_tags)
     except Exception as e:
         raise IOError(f"failed to write {path}: {e}") from e
 

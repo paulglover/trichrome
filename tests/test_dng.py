@@ -88,6 +88,7 @@ def test_the_full_image_is_linear_raw_in_a_subifd_not_ifd0(tmp_path):
     assert raw["NewSubfileType"] == 0                  # the real image
     assert raw["PhotometricInterpretation"] == dng.PHOTOMETRIC_LINEAR_RAW
     assert raw["SamplesPerPixel"] == 3
+    assert raw["PlanarConfiguration"] == 1          # chunky, as DNG requires
     assert tuple(raw["BitsPerSample"]) == (16, 16, 16)
     assert page.shape == (64, 96, 3) and np.dtype(page.dtype) == np.uint16
 
