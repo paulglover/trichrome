@@ -4,7 +4,8 @@ dngfixture (no test assets needed, no camera required).
 
 These are what prove the two extraction modes actually behave as documented:
 each output channel comes only from its own frame's own photosites, at the
-resolution the mode promises.
+resolution the mode promises — and, at the end, that a written linear DNG really
+does go back into a RAW decoder and come out as the merge that went in.
 """
 import os
 
@@ -12,7 +13,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from trichrome import bake, cli, icc, merge, tiff
+from trichrome import bake, cli, dng, icc, merge, tiff
 
 rawpy = pytest.importorskip("rawpy")
 
@@ -163,3 +164,51 @@ def test_cli_no_icc_writes_the_same_pixels_without_the_profile(tmp_path):
     tagged = str(shoot / "frame1_RGB_2.tif")            # never overwrites
     assert tiff.embedded_icc_profile(tagged) == icc.linear_rgb_profile()
     assert np.array_equal(tifffile.imread(untagged), tifffile.imread(tagged))
+
+
+# --------------------------------------------------------------------------- #
+# The linear DNG, opened the way the format exists to be opened
+# --------------------------------------------------------------------------- #
+def test_a_written_dng_opens_in_libraw_as_raw_with_the_merged_values(triplet):
+    """The whole claim of --format dng: a real RAW decoder ingests the file
+    through its RAW pipeline. Decoded with the pipeline switched to identity
+    (camera-native colour, gamma 1, unity white balance, no auto-brighten) it
+    must hand back exactly the merge that went in — proof that the file says
+    what it holds, and that nothing in the container altered it."""
+    shoot, _paths, expected = triplet
+    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 0
+    out = str(shoot / "frame1_RGB.dng")
+
+    with rawpy.imread(out) as decoded:
+        rgb = decoded.postprocess(output_color=rawpy.ColorSpace.raw,
+                                  gamma=(1, 1), no_auto_bright=True,
+                                  output_bps=16, use_camera_wb=False,
+                                  user_wb=[1, 1, 1, 1])
+    assert rgb.shape == (64, 96, 3)
+    for ch, want in enumerate(expected):
+        assert abs(int(rgb[8:-8, 8:-8, ch].mean()) - want) <= 2, f"channel {ch}"
+
+
+def test_the_dng_and_the_tiff_of_one_shoot_hold_the_same_pixels(triplet):
+    """Two containers, one merge: choosing a format must never change the data,
+    only how a converter treats it."""
+    shoot, _paths, _expected = triplet
+    assert cli.main(["merge", str(shoot)]) == 0
+    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 0
+    assert np.array_equal(tifffile.imread(str(shoot / "frame1_RGB.tif")),
+                          dng.read_linear_dng(str(shoot / "frame1_RGB.dng")))
+
+
+def test_a_dng_run_over_a_folder_twice_does_not_eat_its_own_output(triplet):
+    """The .dng-is-also-a-RAW-extension hazard, end to end and with the
+    destructive flag on: the second run must find no inputs at all, rather than
+    merging the first run's output and deleting it."""
+    shoot, paths, _expected = triplet
+    assert cli.main(["merge", str(shoot), "--format", "dng",
+                     "--delete-originals"]) == 0
+    merged = str(shoot / "frame1_RGB.dng")
+    assert os.path.exists(merged) and not any(os.path.exists(p) for p in paths)
+
+    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 2
+    assert os.path.exists(merged)
+    assert not os.path.exists(str(shoot / "frame1_RGB_RGB.dng"))
