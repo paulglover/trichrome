@@ -15,7 +15,7 @@ Public API:
 
     from trichrome import merge_raw_channels, plan_jobs, run_jobs
 """
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 from .bake import (DEFAULT_FORMAT, OUTPUT_FORMATS, Job, JobResult, Summary,
                    collect_raw_files, plan_jobs, run_jobs)
