@@ -48,12 +48,13 @@ def software_tag(version: Optional[str] = None) -> str:
     return f"{FREECCR_MERGE_TIFF_MARKER} (trichrome {version or __version__})"
 
 
-def is_merge_tiff(path) -> bool:
-    """True when `path` is a TIFF carrying the merge marker in its Software tag
-    (written by this tool or by FreeCCR). Reads only the TIFF header; a non-TIFF,
-    unreadable, or unmarked file returns False."""
-    if os.path.splitext(str(path))[1].lower() not in (".tif", ".tiff"):
-        return False
+def carries_merge_marker(path) -> bool:
+    """True when `path` is a TIFF-structured file whose Software tag carries the
+    merge marker — i.e. this tool or FreeCCR wrote it. Reads only the header; an
+    unreadable or unmarked file returns False.
+
+    Extension-agnostic on purpose: a DNG this tool writes is a TIFF underneath
+    and carries the same marker (see dng.is_merge_dng)."""
     try:
         with tifffile.TiffFile(os.path.normpath(str(path))) as tf:
             tag = tf.pages[0].tags.get("Software")
@@ -61,6 +62,15 @@ def is_merge_tiff(path) -> bool:
         return isinstance(value, str) and FREECCR_MERGE_TIFF_MARKER in value
     except Exception:
         return False
+
+
+def is_merge_tiff(path) -> bool:
+    """True when `path` is a TIFF carrying the merge marker in its Software tag
+    (written by this tool or by FreeCCR). Reads only the TIFF header; a non-TIFF,
+    unreadable, or unmarked file returns False."""
+    if os.path.splitext(str(path))[1].lower() not in (".tif", ".tiff"):
+        return False
+    return carries_merge_marker(path)
 
 
 def write_linear_tiff(path: str, merged: np.ndarray,
@@ -112,14 +122,3 @@ def verify_linear_tiff(path: str,
     if expect_shape is not None and tuple(shape[:2]) != tuple(expect_shape):
         raise IOError(f"linear TIFF is {shape[:2]}, expected "
                       f"{tuple(expect_shape)}: {path}")
-
-
-def unique_output_path(folder: str, stem: str) -> str:
-    """`folder/stem.tif`, with a numeric suffix if that name is already taken —
-    this tool NEVER overwrites an existing file."""
-    out = os.path.join(folder, stem + OUTPUT_EXTENSION)
-    n = 2
-    while os.path.exists(out):
-        out = os.path.join(folder, f"{stem}_{n}{OUTPUT_EXTENSION}")
-        n += 1
-    return out
