@@ -230,6 +230,20 @@ twice over a folder is safe — the second run simply finds nothing to do.
 * There is no confirmation prompt: passing the flag is the confirmation. Use
   `--dry-run` first to see exactly which files a run would delete.
 
+## From digiKam, on macOS
+
+[`contrib/macos/`](contrib/macos/) has an AppleScript droplet and a build script
+that turn this tool into an app you can reach from digiKam's (or Finder's) **Open
+With** menu: select the frames of a shoot, open them with it, pick TIFF or DNG.
+
+```bash
+cd contrib/macos && ./build-app.sh      # -> ~/Applications/Trichrome Merge.app
+```
+
+Selection order does not matter — trichrome sorts by filename before grouping.
+See [contrib/macos/README.md](contrib/macos/README.md) for the properties it
+takes and why *Open With* rather than digiKam's batch queue.
+
 ## As a library
 
 ```python
