@@ -155,9 +155,26 @@ def test_the_forward_matrix_maps_the_merge_neutral_onto_d50(tmp_path):
     assert np.allclose(white, expected, atol=1e-6)
 
 
-def test_the_two_matrices_are_inverses_of_each_other():
+def test_the_colour_matrix_maps_the_calibration_illuminant_onto_the_neutral():
+    """The other half of the same consistency requirement, and the half a reader
+    that ignores AsShotNeutral acts on: ColorMatrix1 is stated under the
+    calibration illuminant, so that illuminant's white has to come back out of it
+    as (1, 1, 1). When it does not, a converter deriving its own daylight white
+    balance from the matrix scales the channels apart — the merge arrives lighter
+    with red and green clipped, and disagrees with the TIFF of the same data."""
+    _forward, color = dng.color_matrices()
+    x, y = icc.D65_XY
+    white = np.array(color) @ np.array([x / y, 1.0, (1.0 - x - y) / y])
+    assert np.allclose(white, np.ones(3), atol=1e-6)
+
+
+def test_the_two_matrices_are_not_an_inverse_pair():
+    """They are stated against different whites — ColorMatrix1 under D65,
+    ForwardMatrix1 onto D50 — so their product is the Bradford adaptation
+    between the two, exactly the transform the ICC profile's chad tag holds."""
     forward, color = dng.color_matrices()
-    assert np.allclose(np.array(forward) @ np.array(color), np.eye(3), atol=1e-9)
+    chad = np.array(icc.bradford_adaptation(icc.D65_XY, icc.D50_XY))
+    assert np.allclose(np.array(forward) @ np.array(color), chad, atol=1e-9)
 
 
 def test_the_matrices_state_the_same_primaries_the_icc_profile_does():
@@ -168,6 +185,61 @@ def test_the_matrices_state_the_same_primaries_the_icc_profile_does():
     chad = np.array(icc.bradford_adaptation(icc.D65_XY, icc.D50_XY))
     srgb = np.array(icc.rgb_to_xyz_matrix(icc.SRGB_PRIMARIES_XY, icc.D65_XY))
     assert np.allclose(np.array(forward), chad @ srgb)
+
+
+def test_the_profile_carries_an_identity_tone_curve(tmp_path):
+    """Colour is not the only default a converter supplies. A profile with no
+    tone curve of its own is rendered through the converter's default S-curve,
+    which is the remaining way a DNG can open lighter than the TIFF of the same
+    pixels. The identity fills the slot so there is no default to fall back to.
+
+    Checked as it is ENCODED: the spec wants 32-bit floats (type 11) in (in, out)
+    pairs, and a reader that finds a rational or a short here has no curve."""
+    out = str(tmp_path / "t.dng")
+    dng.write_linear_dng(out, sample())
+    with tifffile.TiffFile(out) as tf:
+        tag = tf.pages[0].tags[50940]
+        dtype, count = tag.dtype, tag.count
+        curve = np.array(tag.value, dtype=float).reshape(-1, 2)
+    assert dtype == 11, f"ProfileToneCurve must be FLOAT, got {dtype}"
+    assert len(curve) >= 2 and count % 2 == 0
+    # The spec's two requirements on any tone curve, then ours on this one.
+    assert tuple(curve[0]) == (0.0, 0.0) and tuple(curve[-1]) == (1.0, 1.0)
+    assert np.allclose(curve[:, 0], curve[:, 1]), curve
+
+
+def test_the_black_point_is_the_converter_s_to_leave_alone(tmp_path):
+    """DefaultBlackRender = None (1). Auto (0, the default) has a converter
+    subtract its own estimated black point, which this file has two reasons to
+    refuse: the merge's black is known exactly and stated as BlackLevel 0, and a
+    negative's darkest values sit well above it on mask density alone, so an
+    automatic black point grades the mask out by an image-dependent amount.
+
+    Type is checked too — the spec wants LONG (4), and a reader that finds
+    something else falls back to Auto."""
+    out = str(tmp_path / "b.dng")
+    dng.write_linear_dng(out, sample())
+    with tifffile.TiffFile(out) as tf:
+        tag = tf.pages[0].tags[51110]
+        dtype, value = tag.dtype, tag.value
+    assert dtype == 4, f"DefaultBlackRender must be LONG, got {dtype}"
+    assert value == 1, f"expected None (1), got {value}"
+
+
+def test_the_declared_versions_stay_consistent_with_each_other(tmp_path):
+    """DNGVersion 1.4 is what lets a 1.4 tag like DefaultBlackRender be in here
+    at all, and DNGBackwardVersion 1.2 stays put on purpose: it is a claim about
+    what a reader must UNDERSTAND to open the file, and every tag newer than 1.2
+    is a rendering default that an older reader safely skips. A tag that an older
+    reader could not skip would have to move this, so it is pinned rather than
+    left to drift."""
+    out = str(tmp_path / "v.dng")
+    dng.write_linear_dng(out, sample())
+    _page, ifd0, _raw = raw_page(out)
+    version = tuple(bytes(ifd0["DNGVersion"]))
+    backward = tuple(bytes(ifd0["DNGBackwardVersion"]))
+    assert version == (1, 4, 0, 0) and backward == (1, 2, 0, 0)
+    assert backward <= version
 
 
 def test_the_written_matrices_match_the_computed_ones(tmp_path):
