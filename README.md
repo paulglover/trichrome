@@ -187,12 +187,30 @@ colorimetric. So the DNG makes the **same** assumption the ICC profile does, so
 that the two formats cannot contradict each other:
 
 * the merge is treated as linear RGB on sRGB/Rec.709 primaries, written as
-  `ColorMatrix1` and `ForwardMatrix1` for a D50 calibration illuminant;
+  `ColorMatrix1` under a D65 calibration illuminant — the white those primaries
+  are defined against — and `ForwardMatrix1` onto D50, the white the DNG spec
+  fixes for that tag. The two are not inverses of each other, and a file where
+  they are renders lighter with red and green clipped in any converter that
+  derives its own white balance from the matrix instead of reading
+  `AsShotNeutral`;
 * `AsShotNeutral` is (1, 1, 1) — not a guess but a fact, since the merge applies
   no white balance, so its neutral is equal channels by construction;
 * `UniqueCameraModel` is `Trichrome 3-way RGB merge`, a name no profile database
   knows, so a reader goes to the embedded matrices rather than to some real
-  camera's profile.
+  camera's profile;
+* `ProfileToneCurve` is the identity, (0, 0) -> (1, 1). A profile that states no
+  curve is rendered through the converter's own default S-curve — the remaining
+  way a DNG can open lighter than the TIFF of the same pixels — so it is there
+  to leave nothing for a default to fill;
+* `DefaultBlackRender` is `None`. Left at `Auto`, a converter subtracts its own
+  estimated black point — but this file's black is known exactly and stated as
+  `BlackLevel = 0`, and a negative's darkest values sit well above it on mask
+  density alone, so an automatic black point grades the mask out by an amount
+  that depends on the image.
+
+Those last two decline both of the default renderings a converter applies before
+you have touched anything. They are as far as a file can go: a converter's own
+process-version baseline is still its own.
 
 Treat the primaries as a placeholder exactly as with the TIFF, and grade from
 there.

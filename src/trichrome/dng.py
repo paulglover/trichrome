@@ -39,14 +39,71 @@ contradict each other:
 * `AsShotNeutral` is (1, 1, 1) — which is not a guess but a fact: the merge
   applies no white balance, so its neutral is equal channels by construction.
 
-`ForwardMatrix1` (camera -> XYZ D50) is written as well as `ColorMatrix1` (its
-inverse), because a reader given both uses the forward matrix directly instead of
-inverting and chromatically adapting the other one — fewer assumptions applied on
-top of ours. The calibration illuminant is D50, matching the matrix, so no
-adaptation is implied at all.
+`ForwardMatrix1` (camera -> XYZ D50) is written as well as `ColorMatrix1`
+(XYZ -> camera), because a reader given both uses the forward matrix directly
+instead of inverting and chromatically adapting the other one — fewer
+assumptions applied on top of ours.
+
+The two are NOT inverses, and must not be: the DNG spec defines them against
+different white points. ColorMatrix1 is stated under the calibration illuminant,
+which is D65 here because that is the white sRGB primaries are defined against
+and the white icc.py's profile assumes — so it is the unadapted XYZ -> RGB
+matrix, and it takes D65's XYZ onto (1, 1, 1), agreeing with AsShotNeutral.
+ForwardMatrix1's output is always D50 by definition (it feeds the profile
+connection space), so it carries the Bradford adaptation the ICC profile's
+`chad` tag carries, and takes (1, 1, 1) onto D50's XYZ.
+
+Getting that split wrong is not cosmetic. A reader that honours AsShotNeutral
+renders either version identically, but one that instead derives a daylight
+white balance from ColorMatrix1 — libraw and dcraw do this by default, as does
+any "camera reference" white balance preset — divides by that matrix's response
+to D65. State the matrix under D50 and that response is (0.83, 1.02, 1.37),
+so such a reader multiplies the merge by (1.66, 1.34, 1.00): two thirds of a
+stop of extra red, four tenths of extra green, clipping red above 39,600 and
+green above 48,900 while the TIFF of the same merge shows neither.
 
 Treat the primaries as a placeholder exactly as with the TIFF, and grade from
 there.
+
+The tone curve
+--------------
+`ProfileToneCurve` is written as the identity, (0, 0) -> (1, 1).
+
+Colour is not the only default a raw converter supplies. Given a profile with no
+tone curve of its own, Adobe's SDK — and everything modelled on it — renders
+through its default curve instead, a contrasty S built for camera sensor data.
+That curve is the remaining reason a DNG can open lighter than the TIFF of the
+same pixels once the matrices agree: it is tone applied to data that has no
+business being toned. Declaring the identity leaves the slot filled, so there is
+no default for a converter to fall back on.
+
+The curve is two control points, which is how the spec says "identity" — the
+first sample must be (0, 0) and the last (1, 1), and a cubic spline through
+nothing else is the straight line between them.
+
+The black point
+---------------
+`DefaultBlackRender` is written as 1, None.
+
+The other default a converter applies before you have touched anything. Left at
+0, Auto, a raw converter subtracts its own estimate of a black point — a flare
+correction, reasonable for a lens pointed at a scene and wrong for this file
+twice over. The merge's black is already known exactly, and stated: each channel
+was normalised by its own frame's usable range, so 0 IS black, which is what
+`BlackLevel = 0` says a few tags along. And a trichrome negative's darkest values
+sit nowhere near zero — the orange mask holds them up — so an automatic black
+point has a large, entirely image-dependent amount to subtract, which is a grade
+being made for you out of the mask density.
+
+None says: the black in the file is the black. Together with the identity tone
+curve, that is both of the converter's default renderings declined, which is as
+far as a file can go — a converter's process-version baseline is still its own.
+
+`DefaultBlackRender` is a DNG 1.4 tag and `DNGBackwardVersion` stays at 1.2,
+deliberately: a 1.2 reader that has never heard of it skips it and renders as it
+always would, which is a different default, not a failure to read the file. The
+backward version is a claim about what a reader must UNDERSTAND to open the
+file, and nothing here has moved that.
 
 Compression
 -----------
@@ -86,14 +143,16 @@ _TAG_WHITE_LEVEL = 50717
 _TAG_COLOR_MATRIX_1 = 50721
 _TAG_AS_SHOT_NEUTRAL = 50728
 _TAG_CALIBRATION_ILLUMINANT_1 = 50778
+_TAG_PROFILE_TONE_CURVE = 50940
 _TAG_FORWARD_MATRIX_1 = 50964
+_TAG_DEFAULT_BLACK_RENDER = 51110
 
 # PhotometricInterpretation for demosaiced, camera-native RGB.
 PHOTOMETRIC_LINEAR_RAW = 34892
 
-# CalibrationIlluminant code 23 is D50 — the white point the matrices below are
-# built for, so a reader has nothing to adapt.
-_ILLUMINANT_D50 = 23
+# CalibrationIlluminant code 21 is D65 — the white ColorMatrix1 is stated under,
+# and the white sRGB primaries (and so icc.py's profile) are defined against.
+_ILLUMINANT_D65 = 21
 
 # What the file calls the "camera" that produced it. Not a real camera, and
 # deliberately not one: a name no camera profile database knows sends every
@@ -107,21 +166,31 @@ _RATIONAL_DEN = 1000000
 # Longest edge of the embedded thumbnail, in pixels.
 _THUMBNAIL_MAX_EDGE = 256
 
+# ProfileToneCurve as (in, out) pairs of 32-bit floats: the identity. See the
+# module docstring — this is here to DISPLACE the converter's default curve, not
+# to shape anything.
+IDENTITY_TONE_CURVE = (0.0, 0.0, 1.0, 1.0)
+
+# DefaultBlackRender code 1 is None: the converter is asked not to subtract a
+# black point of its own. Code 0, the default, is Auto.
+_BLACK_RENDER_NONE = 1
+
 
 def color_matrices() -> Tuple[List[List[float]], List[List[float]]]:
     """`(forward, color)`: ForwardMatrix1 (camera -> XYZ D50) and ColorMatrix1
-    (XYZ D50 -> camera), for the sRGB-primaries convention this tool assumes for
+    (XYZ D65 -> camera), for the sRGB-primaries convention this tool assumes for
     a merge — the same one icc.py builds its profile on. See the module
     docstring on why a convention is all this can be.
 
-    The forward matrix maps (1, 1, 1) — the merge's neutral, and the
-    AsShotNeutral written into the file — onto the D50 white point exactly, which
-    is what makes the pair self-consistent for a reader."""
+    The pair is deliberately not an inverse pair. Each is stated against the
+    white its tag is defined against, which is what makes the file consistent
+    under BOTH ways a reader can find the merge's neutral: ColorMatrix1 takes the
+    calibration illuminant's white onto (1, 1, 1), and ForwardMatrix1 takes
+    (1, 1, 1) onto D50, the profile connection space's white."""
     to_xyz_d65 = np.array(icc_mod.rgb_to_xyz_matrix(icc_mod.SRGB_PRIMARIES_XY,
                                                     icc_mod.D65_XY))
     chad = np.array(icc_mod.bradford_adaptation(icc_mod.D65_XY, icc_mod.D50_XY))
-    forward = chad @ to_xyz_d65
-    return forward.tolist(), np.linalg.inv(forward).tolist()
+    return (chad @ to_xyz_d65).tolist(), np.linalg.inv(to_xyz_d65).tolist()
 
 
 def _rational(values) -> Tuple[int, ...]:
@@ -170,7 +239,8 @@ def write_linear_dng(path: str, merged: np.ndarray,
 
     The pixels written are exactly `merged`, unchanged — same bytes the TIFF
     writer would put down. Everything else in the file is metadata saying what
-    they are: linear, black at 0, white at 65535, neutral at (1, 1, 1)."""
+    they are: linear, black at 0, white at 65535, neutral at (1, 1, 1), toned by
+    nothing and blacked by nothing."""
     if merged.dtype != np.uint16 or merged.ndim != 3 or merged.shape[2] != 3:
         raise ValueError(f"expected an (H, W, 3) uint16 array, got "
                          f"shape={merged.shape} dtype={merged.dtype}")
@@ -178,13 +248,17 @@ def write_linear_dng(path: str, merged: np.ndarray,
     ifd0_tags = [
         (_TAG_DNG_VERSION, 'B', 4, (1, 4, 0, 0), True),
         # The oldest reader that can make sense of this file: ForwardMatrix1
-        # arrived in DNG 1.2, and nothing here needs anything newer.
+        # and ProfileToneCurve both arrived in DNG 1.2, and nothing here needs
+        # anything newer.
         (_TAG_DNG_BACKWARD_VERSION, 'B', 4, (1, 2, 0, 0), True),
         (_TAG_UNIQUE_CAMERA_MODEL, 's', 0, UNIQUE_CAMERA_MODEL, True),
         (_TAG_COLOR_MATRIX_1, '2i', 9, _rational(color), True),
         (_TAG_FORWARD_MATRIX_1, '2i', 9, _rational(forward), True),
-        (_TAG_CALIBRATION_ILLUMINANT_1, 'H', 1, _ILLUMINANT_D50, True),
+        (_TAG_CALIBRATION_ILLUMINANT_1, 'H', 1, _ILLUMINANT_D65, True),
         (_TAG_AS_SHOT_NEUTRAL, '2I', 3, _rational((1.0, 1.0, 1.0)), True),
+        (_TAG_PROFILE_TONE_CURVE, 'f', len(IDENTITY_TONE_CURVE),
+         IDENTITY_TONE_CURVE, True),
+        (_TAG_DEFAULT_BLACK_RENDER, 'I', 1, _BLACK_RENDER_NONE, True),
     ]
     raw_tags = [
         # One black/white level per sample, with a 1x1 repeat pattern: the merge

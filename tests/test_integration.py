@@ -189,6 +189,41 @@ def test_a_written_dng_opens_in_libraw_as_raw_with_the_merged_values(triplet):
         assert abs(int(rgb[8:-8, 8:-8, ch].mean()) - want) <= 2, f"channel {ch}"
 
 
+def test_the_dng_survives_a_decoder_that_derives_its_own_white_balance(triplet):
+    """The test above pins `user_wb`, which is the one thing a real converter
+    does NOT do — so on its own it cannot see the failure this guards against.
+
+    A reader has two ways to find the merge's neutral: read AsShotNeutral, or
+    derive a daylight balance from ColorMatrix1. rawpy, libraw and dcraw take the
+    second by default, as does any "camera reference" white balance preset, and
+    a file whose ColorMatrix1 is stated under the wrong illuminant sends those
+    two ways to different answers. Stating it under D50 while AsShotNeutral says
+    (1, 1, 1) made the derived multipliers (1.65, 1.34, 1.00): the merge arrived
+    two thirds of a stop hot in red, clipping red and green, while the TIFF of
+    the same pixels was untouched. Both routes must agree, and agree on unity."""
+    shoot, _paths, expected = triplet
+    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 0
+    out = str(shoot / "frame1_RGB.dng")
+
+    with rawpy.imread(out) as decoded:
+        as_shot = np.array(decoded.camera_whitebalance[:3])
+        derived = np.array(decoded.daylight_whitebalance[:3])
+        # Left to itself: no user_wb, no use_camera_wb — the converter's own
+        # reading of the file, which is how FreeCCR and Affinity Photo open it.
+        rgb = decoded.postprocess(output_color=rawpy.ColorSpace.raw,
+                                  gamma=(1, 1), no_auto_bright=True,
+                                  output_bps=16)
+    assert np.allclose(as_shot, 1.0, atol=1e-4), as_shot
+    assert np.allclose(derived / derived.min(), 1.0, atol=1e-3), derived
+    # A relative tolerance, unlike the test above: those multipliers came out of
+    # the matrix as it is ENCODED, to six decimal places, so this route carries a
+    # rounding the pinned-unity one does not. 0.1% is still two and a half stops
+    # clear of the (1.65, 1.34, 1.00) this exists to catch.
+    for ch, want in enumerate(expected):
+        got = int(rgb[8:-8, 8:-8, ch].mean())
+        assert abs(got - want) <= want * 1e-3, f"channel {ch}: {got} vs {want}"
+
+
 def test_the_dng_and_the_tiff_of_one_shoot_hold_the_same_pixels(triplet):
     """Two containers, one merge: choosing a format must never change the data,
     only how a converter treats it."""
