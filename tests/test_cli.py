@@ -96,3 +96,48 @@ def test_a_failed_triplet_makes_the_command_exit_nonzero(tmp_path, capsys,
     fake_decode.boom = "img002"
     assert cli.main(["merge", str(tmp_path)]) == 1
     assert "FAILED" in capsys.readouterr().err
+
+
+# --- despeck wiring --------------------------------------------------------
+
+def test_despeck_is_off_unless_asked_for(tmp_path, fake_decode, capsys):
+    raws(tmp_path, 3)
+    assert cli.main(["merge", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    # (the tmp_path name contains "despeck" here, so match the real output)
+    assert "despeck:" not in out and "despeck (threshold" not in out
+
+
+def test_despeck_reports_its_settings_and_result(tmp_path, fake_decode, capsys):
+    raws(tmp_path, 3)
+    assert cli.main(["merge", str(tmp_path), "--despeck",
+                     "--despeck-threshold", "0.2",
+                     "--despeck-radius", "5"]) == 0
+    out = capsys.readouterr().out
+    assert "despeck (threshold 0.2 D, radius 5 px, floor p99.9)" in out
+    assert "despeck: 0 defect(s)" in out        # the fake decode is flat
+
+
+def test_despeck_mask_is_written_and_named(tmp_path, fake_decode, capsys):
+    raws(tmp_path, 3)
+    assert cli.main(["merge", str(tmp_path), "--despeck",
+                     "--despeck-mask"]) == 0
+    assert "img001_RGB_mask.tif" in capsys.readouterr().out
+    assert os.path.exists(tmp_path / "img001_RGB_mask.tif")
+
+
+@pytest.mark.parametrize("flag", [
+    ["--despeck-threshold", "0.2"],
+    ["--despeck-radius", "6"],
+    ["--despeck-neutrality", "0.5"],
+    ["--despeck-floor-percentile", "99.0"],
+    ["--despeck-mask"],
+])
+def test_tuning_without_despeck_is_an_error_not_a_silent_no_op(
+        tmp_path, fake_decode, flag, capsys):
+    """The flags do nothing on their own, and a run that quietly ignored them
+    would look like a despeck that found nothing."""
+    raws(tmp_path, 3)
+    assert cli.main(["merge", str(tmp_path)] + flag) == 2
+    assert "only applies with --despeck" in capsys.readouterr().err
+

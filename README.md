@@ -32,6 +32,7 @@ trichrome list ./shoot                        # show the triplet grouping first
 trichrome merge ./shoot                       # write TIFFs, keep the RAWs
 trichrome merge ./shoot --format dng          # linear DNGs instead
 trichrome merge ./shoot --out ./merged        # write them somewhere else
+trichrome merge ./shoot --despeck             # also remove dust, hairs, scratches
 trichrome merge ./shoot --dry-run             # plan only, decode nothing
 trichrome merge ./shoot --delete-originals    # destructive; no prompt
 ```
@@ -59,6 +60,12 @@ wrote /shoot/img004_RGB.tif  (6024x4024, uint16)
 | `--order RGB` | which light each frame of a triplet was shot under, in filename order — `BGR` if you shot blue first |
 | `--demosaic` / `--photosite` | see *Two ways to extract a channel* below (default `--demosaic`) |
 | `--no-icc` | write a strictly untagged TIFF, with no linear ICC profile (no effect on `--format dng`) |
+| `--despeck` | detect and repair dust, hairs and fine scratches — see *Removing dust* below (off by default; the only option here that changes pixels) |
+| `--despeck-threshold D` | minimum neutral density a defect must add before it is repaired (default `0.15`) |
+| `--despeck-radius PX` | half-width of the structuring element: the largest defect that can be detected (default `4`) |
+| `--despeck-neutrality F` | how equally a defect must attenuate R, G and B to count as dust, 0–1 (default `0.7`) |
+| `--despeck-floor-percentile P` | frame percentile taken as the densest real film; nothing below it is repaired, which is what keeps specular highlights out. `0` disables (default `99.9`) |
+| `--despeck-mask` | also write the defect mask beside each output, to check the detector by eye |
 | `--delete-originals` | permanently delete each triplet's RAWs once its merged file verifies |
 | `-n, --dry-run` | show what would happen; decode, write and delete nothing |
 
@@ -231,6 +238,126 @@ sources would otherwise be picked up as an *input* on the next run. It isn't:
 folder scans skip files carrying the merge marker, so running the same command
 twice over a folder is safe — the second run simply finds nothing to do.
 
+## Removing dust
+
+`--despeck` finds dust, hairs and fine scratches on the merged **uninverted**
+negative and repairs them before the file is written. It is off by default and
+it is the only option in this tool that changes pixels rather than metadata.
+
+```
+$ trichrome merge ./shoot --despeck --despeck-mask
+1 triplet(s) · light order RGB · demosaic (full resolution) · linear TIFF · despeck (threshold 0.15 D, radius 4 px)
+[1/1] img001.arw + img002.arw + img003.arw  ->  img001_RGB.tif
+
+wrote /shoot/img001_RGB.tif  (6024x4024, uint16)
+  despeck: 298 defect(s), 0.505% of pixels  (41 thinned, 257 filled)
+  mask:    /shoot/img001_RGB_mask.tif
+```
+
+It works on four ideas, and the module docstring in `src/trichrome/despeck.py`
+goes through each in full:
+
+* **Density, not linear.** A speck is a *multiplicative* attenuation, so in the
+  linear data it costs thousands of ADU in a thin part of the negative and a few
+  dozen in a dense one. In density, `D = -log10(value/white)`, it adds a roughly
+  constant offset anywhere in the frame — so one threshold works everywhere.
+* **A local baseline, to FIND a defect.** "Darker than the darkest exposed area"
+  founders as a detector — on in-scene light sources, on the lens PSF blurring
+  small specks, and on illumination falloff. A morphological opening removes
+  anything narrower than its structuring element, and the top-hat
+  `D - opening(D)` is the candidate.
+* **An absolute density floor, to CONFIRM it.** The local measurement on its own
+  cannot tell dust from a small bright **highlight** in the scene: both are
+  small, both are neutral, both are locally much denser than their surroundings.
+  What separates them is the level the top-hat throws away. A highlight is
+  exposure, bounded by what the film can record; dust is an obstruction, denser
+  than any exposed part of the negative. So nothing is repaired unless it clears
+  `--despeck-floor-percentile` of the frame's own density.
+* **Neutrality across the three channels.** This is what a trichrome merge gets
+  for free. Dust attenuates R, G and B equally; real colour-negative detail does
+  not, because the dye layers respond independently. It needs no white balance —
+  the local residual cancels any per-channel gain.
+* **Subtract where possible, fill only where necessary.** Under partial
+  occlusion the picture is still there, just attenuated, so the measured density
+  is subtracted and the real detail and grain survive. Only where attenuation
+  destroyed the signal is a pixel replaced, by a diffusion fill with grain
+  reinjected to match its surroundings.
+
+Pixels outside the defect mask come back **bit-identical** — despeckling is
+surgery, not a re-render.
+
+### Cost
+
+Detection sweeps the frame in horizontal strips and the repair works one defect
+window at a time, so neither stage ever holds a frame-sized stack of float
+planes. Measured on this machine, with ~0.4% of pixels defective:
+
+| frame | time | peak RSS |
+| --- | --- | --- |
+| 24 MP (6024x4024) | 9 s | 1.4 GB |
+| 48 MP (8000x6000) | 16 s | 2.2 GB |
+| 80 MP (10000x8000) | 23 s | 2.9 GB |
+| 102 MP (11648x8736) | 27 s | 3.5 GB |
+
+Both scale linearly with pixel count. The peak includes the input frame and the
+repaired copy; the merge that precedes it peaks lower, so despeckling sets the
+high-water mark for the run. If you ever need it lower, `_STRIP_ROWS` in
+`despeck.py` trades a little speed for a smaller detection working set.
+
+### Tuning it
+
+The defaults are conservative, and deliberately so: on a real 80MP scan carrying
+no dust at all, a 0.15 D threshold found 211 "defects" — every one a catchlight
+in the picture — while the current 0.5 D found none. With dust planted into that
+same frame, the defaults caught 58 of 60 specks: everything down to 0.8 D of
+attenuation, and four in five of the faintest at 0.5 D.
+
+If real dust is being missed, in rough order of what to reach for:
+
+* `--despeck-threshold 0.3` — the main sensitivity control. Lower catches
+  fainter dust and starts risking scene detail.
+* `--despeck-floor-percentile 0` — turns off the highlight protection. Worth it
+  for faint dust on a **thin** part of a contrasty negative, which adds its
+  density to a low base and may never clear the floor. Expect specular
+  highlights to start being "repaired".
+* `--despeck-radius` — raise it for dust larger than ~6 px across.
+
+Always check `--despeck-mask` before trusting a loosened setting.
+
+### When it does not work
+
+* **B&W negatives.** The silver image is itself neutral, so the cross-channel
+  test goes vacuous: it passes real detail as readily as dust and detection
+  falls back on shape and absolute density. It does no harm, it just stops
+  helping, and `--despeck-threshold` becomes the main knob that bites.
+* **Faint dust on thin film.** Dust lying over a shadow area of the scene adds
+  its density to a low base, and may not clear the floor. This is the deliberate
+  direction to err — see *Tuning it* above.
+* **Defects wider than `--despeck-radius`.** An opening only removes what is
+  narrower than its element, so a big blob survives in its middle and the
+  top-hat sees its rim alone. Repairing that rim would paint a dark ring around
+  an untouched core — worse than doing nothing — so a second top-hat at four
+  times the radius is run purely to *classify*: anything whose neighbourhood
+  answers much larger at the coarse scale than the component itself is a rim,
+  and is **left alone**. The run says so, and raising the radius fixes it:
+
+  ```
+  despeck: 12 defect(s), 0.031% of pixels  (3 thinned, 9 filled)
+           2 too wide for the current --despeck-radius and left alone; raise it to catch them
+  ```
+
+* **Scratches that gouged emulsion away.** Those removed *dye*, so they are
+  neither neutral nor denser than their surroundings, and this detector does not
+  look for them at all.
+* **Long scratches** are caught only while they stay thinner than the
+  structuring element. A multiscale ridge filter would do better; see the TODO
+  at the top of `despeck.py`.
+* **A hair crossing an oversized blob** joins the two into one component, and
+  the part of the rim the hair touches is repaired with it. The run still
+  reports the blob as oversized; raising the radius is the fix.
+
+Start with `--despeck-mask` and look at the mask before trusting the repair.
+
 ## Deleting the originals
 
 `--delete-originals` is destructive and off by default. When it is on:
@@ -275,6 +402,10 @@ print(len(summary.written), "merged;", len(summary.failures), "failed")
 `plan_jobs(..., fmt="dng")` is the library spelling of `--format dng`. The format
 is settled at plan time because it decides the extension, and so the output path;
 each `Job` carries it, and `run_jobs` writes what the job says.
+
+`run_jobs(..., despeck=DespeckOptions())` is the library spelling of
+`--despeck`; `trichrome.despeck.despeck(rgb, DespeckOptions())` runs the pass on
+an array you already have, returning `(cleaned, stats, mask)`.
 
 `merge_raw_channels(sources, demosaic=True, light_order="RGB")` returns
 `(uint16 HxWx3 array, (H, W))` if you just want the pixels. `run_jobs(...,

@@ -11,6 +11,9 @@ Deletion safety is the whole point of this module, so the rules are explicit:
 
 * A source RAW is deleted ONLY after its replacement exists on disk and reads
   back as a valid uint16 RGB image of the expected size.
+* Optional despeckling (despeck.py) runs between the merge and the write, so a
+  detector that refuses a frame fails that job like any other error — its
+  sources are kept and its half-written output removed.
 * If any triplet fails, none of ITS sources are deleted — and neither are those
   sources' copies in any other triplet that happened to reference them
   (shared-source safety: a frame's only copy is never orphaned).
@@ -23,6 +26,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
+from . import despeck as despeck_mod
 from . import dng as dng_mod
 from . import merge as merge_mod
 from . import tiff as tiff_mod
@@ -107,6 +111,11 @@ class JobResult:
     job: Job
     size: Optional[Tuple[int, int]] = None      # (H, W) of the written image
     error: Optional[str] = None
+    # What the optional despeck pass did, or None if it did not run.
+    despeck: Optional[despeck_mod.Stats] = None
+    # The defect mask written beside the output, if one was asked for. Tracked
+    # so cancel and failure cleanup can remove it with the output.
+    mask: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -129,6 +138,15 @@ class Summary:
     @property
     def failures(self) -> List[JobResult]:
         return [r for r in self.results if not r.ok]
+
+
+def mask_output_path(output: str) -> str:
+    """Where a despeck mask goes for a given output file: beside it, same stem
+    plus `_mask`, always a TIFF whatever the merge format is. Routed through
+    unique_output_path, so a mask never overwrites anything either."""
+    folder = os.path.dirname(os.path.abspath(output))
+    stem = os.path.splitext(os.path.basename(output))[0] + "_mask"
+    return unique_output_path(folder, stem, tiff_mod.OUTPUT_EXTENSION)
 
 
 def _is_mergeable_source(path: str) -> bool:
@@ -211,6 +229,7 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
              light_order: str = merge_mod.DEFAULT_LIGHT_ORDER,
              delete_originals: bool = False, dry_run: bool = False,
              icc: bool = True,
+             despeck: Optional[despeck_mod.Options] = None,
              progress_cb: Optional[Callable[[int, int, Job], None]] = None,
              cancel_flag: Optional[Callable[[], bool]] = None) -> Summary:
     """Merge every job, write + verify its linear output, then — only with
@@ -223,6 +242,11 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
     `icc` embeds the linear ICC profile in each TIFF (see tiff.py); it changes
     tags only, never pixels, so it has no bearing on deletion safety. DNG output
     ignores it — that format states its own linearity (see dng.py).
+
+    `despeck` (see despeck.py) removes dust, hairs and fine scratches from the
+    merged frame before it is written — it changes PIXELS, unlike every other
+    option here, so it is off unless asked for. With `want_mask` it also writes
+    the defect mask beside each output, for checking the detector by eye.
 
     `progress_cb(index, total, job)` is called before each job starts.
     `cancel_flag()` is polled between jobs; returning True aborts cleanly."""
@@ -239,11 +263,19 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
         if dry_run:
             summary.results.append(JobResult(job=job))
             continue
+        mask_path = None
         try:
             os.makedirs(os.path.dirname(os.path.abspath(job.output)), exist_ok=True)
             merged, full_size = merge_mod.merge_raw_channels(
                 job.sources, preview=False, demosaic=demosaic,
                 light_order=light_order)
+            despeck_stats = None
+            if despeck is not None:
+                merged, despeck_stats, mask = despeck_mod.despeck(merged, despeck)
+                if mask is not None:
+                    mask_path = mask_output_path(job.output)
+                    despeck_mod.write_mask(mask_path, mask)
+                    del mask
             _write_output(job.output, merged, job.fmt, icc)
             del merged                        # a full-res 16-bit RGB frame
             _verify_output(job.output, job.fmt, full_size)
@@ -251,23 +283,29 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
             summary.results.append(JobResult(job=job, error=str(e)))
             bad_sources.update(os.path.normcase(os.path.abspath(s))
                                for s in job.sources)
-            # A partial/corrupt file must not be left behind claiming the name.
-            try:
-                if os.path.exists(job.output):
-                    os.remove(job.output)
-            except OSError:
-                pass
+            # A partial/corrupt file must not be left behind claiming the name,
+            # and nor must the mask of a merge that never landed.
+            for stale in (job.output, mask_path):
+                try:
+                    if stale and os.path.exists(stale):
+                        os.remove(stale)
+                except OSError:
+                    pass
             continue
-        summary.results.append(JobResult(job=job, size=tuple(full_size)))
+        summary.results.append(JobResult(job=job, size=tuple(full_size),
+                                         despeck=despeck_stats,
+                                         mask=mask_path))
 
     if summary.cancelled:
         # Abort cleanly: nothing is ever deleted, and the files written so far
         # are removed so the folder is left untouched.
         for r in summary.written:
-            try:
-                os.remove(r.job.output)
-            except OSError:
-                pass
+            for path in (r.job.output, r.mask):
+                try:
+                    if path:
+                        os.remove(path)
+                except OSError:
+                    pass
         summary.results = [r for r in summary.results if not r.ok]
         return summary
 

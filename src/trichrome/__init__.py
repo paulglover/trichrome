@@ -14,11 +14,17 @@ same pixels either way.
 Public API:
 
     from trichrome import merge_raw_channels, plan_jobs, run_jobs
+
+Dust, hair and scratch removal for the uninverted merge is opt-in and lives in
+`trichrome.despeck` (configured with `DespeckOptions`); it is the only part of
+this package that changes pixels rather than metadata.
 """
 __version__ = "0.3.1"
 
 from .bake import (DEFAULT_FORMAT, OUTPUT_FORMATS, Job, JobResult, Summary,
                    collect_raw_files, plan_jobs, run_jobs)
+from .despeck import Options as DespeckOptions
+from .despeck import Stats as DespeckStats
 from .dng import (is_merge_dng, read_linear_dng, verify_linear_dng,
                   write_linear_dng)
 from .icc import linear_rgb_profile
@@ -32,6 +38,7 @@ __all__ = [
     "__version__",
     "DEFAULT_FORMAT", "OUTPUT_FORMATS",
     "Job", "JobResult", "Summary", "collect_raw_files", "plan_jobs", "run_jobs",
+    "DespeckOptions", "DespeckStats",
     "is_merge_dng", "read_linear_dng", "verify_linear_dng", "write_linear_dng",
     "MERGE_GROUP_SIZE", "RAW_EXTENSIONS", "combine_channels",
     "group_into_triplets", "is_raw_path", "merge_raw_channels",

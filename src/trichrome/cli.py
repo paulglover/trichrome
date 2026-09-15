@@ -4,6 +4,7 @@ Command-line interface.
     trichrome merge ./shoot                     # write TIFFs, keep the RAWs
     trichrome merge ./shoot --format dng        # linear DNGs instead
     trichrome merge ./shoot --out ./merged
+    trichrome merge ./shoot --despeck            # also remove dust and hairs
     trichrome merge ./shoot --delete-originals  # destructive; no prompt
     trichrome merge ./shoot --dry-run           # show the plan only
     trichrome list ./shoot                      # show the triplet grouping
@@ -15,6 +16,7 @@ from typing import List
 
 from . import __version__
 from . import bake as bake_mod
+from . import despeck as despeck_mod
 from . import merge as merge_mod
 
 
@@ -39,8 +41,33 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _despeck_options(args) -> "despeck_mod.Options | None":
+    """Build the despeck settings, or None when the pass is off.
+
+    The tuning flags default to None rather than to their real values so that
+    passing one WITHOUT --despeck is an error instead of a silent no-op."""
+    tuned = {name: getattr(args, "despeck_" + name)
+             for name in ("threshold", "radius", "neutrality",
+                          "floor_percentile")}
+    given = [n for n, v in tuned.items() if v is not None]
+    if not args.despeck:
+        if given or args.despeck_mask:
+            flags = ", ".join("--despeck-" + n.replace("_", "-")
+                              for n in given)
+            if args.despeck_mask:
+                flags = ", ".join(filter(None, [flags, "--despeck-mask"]))
+            raise ValueError(f"{flags} only applies with --despeck")
+        return None
+    opt = despeck_mod.Options(want_mask=args.despeck_mask)
+    for name, value in tuned.items():
+        if value is not None:
+            setattr(opt, name, value)
+    return opt
+
+
 def cmd_merge(args) -> int:
     jobs = _plan(args)
+    despeck = _despeck_options(args)
     mode = "demosaic (full resolution)" if args.demosaic else \
            "single photosite (half resolution)"
     fmt = bake_mod.normalise_format(args.format)
@@ -49,7 +76,12 @@ def cmd_merge(args) -> int:
     print(f"{len(jobs)} triplet(s) · light order {args.order.upper()} · {mode}"
           f" · {label}"
           # --no-icc has nothing to switch off on the DNG path.
-          + ("" if args.icc or is_dng else " · untagged (no ICC)"))
+          + ("" if args.icc or is_dng else " · untagged (no ICC)")
+          + ("" if despeck is None else
+             f" · despeck (threshold {despeck.threshold:g} D, "
+             f"radius {despeck.radius} px, floor "
+             + (f"p{despeck.floor_percentile:g})"
+                if despeck.floor_percentile else "off)")))
 
     def progress(i, total, job):
         print(f"[{i + 1}/{total}] {_fmt_triplet(job).strip()}  ->  "
@@ -58,7 +90,7 @@ def cmd_merge(args) -> int:
     summary = bake_mod.run_jobs(
         jobs, demosaic=args.demosaic, light_order=args.order,
         delete_originals=args.delete_originals, dry_run=args.dry_run,
-        icc=args.icc, progress_cb=progress)
+        icc=args.icc, despeck=despeck, progress_cb=progress)
 
     if args.dry_run:
         print(f"\nDry run — nothing written. {len(jobs)} "
@@ -71,6 +103,15 @@ def cmd_merge(args) -> int:
     for r in summary.written:
         h, w = r.size or (0, 0)
         print(f"wrote {r.job.output}  ({w}x{h}, uint16)")
+        if r.despeck:
+            d = r.despeck
+            print(f"  despeck: {d.defects} defect(s), {d.fraction:.3%} of pixels"
+                  f"  ({d.subtracted} thinned, {d.filled} filled)")
+            if d.oversize:
+                print(f"           {d.oversize} too wide for the current "
+                      f"--despeck-radius and left alone; raise it to catch them")
+        if r.mask:
+            print(f"  mask:    {r.mask}")
     for r in summary.failures:
         print(f"FAILED {r.job.name}: {r.error}", file=sys.stderr)
     for path, reason in summary.delete_errors:
@@ -138,6 +179,37 @@ def build_parser() -> argparse.ArgumentParser:
                          "profile (pixels are the same either way; without it "
                          "viewers assume sRGB and show the file dark). No "
                          "effect on --format dng, which carries no ICC profile")
+    sp.add_argument("--despeck", action="store_true",
+                    help="detect and repair dust, hairs and fine scratches on "
+                         "the merged UNINVERTED negative. Unlike every other "
+                         "option here this CHANGES PIXELS — see despeck.py for "
+                         "what it does and when it does not work")
+    sp.add_argument("--despeck-threshold", type=float, metavar="D",
+                    help="minimum neutral density a defect must add before it "
+                         "is repaired; lower catches more and risks real detail "
+                         f"(default: {despeck_mod.DEFAULT_THRESHOLD})")
+    sp.add_argument("--despeck-radius", type=int, metavar="PX",
+                    help="half-width of the structuring element: the largest "
+                         "defect that can be detected "
+                         f"(default: {despeck_mod.DEFAULT_RADIUS})")
+    sp.add_argument("--despeck-neutrality", type=float, metavar="F",
+                    help="how equally a defect must attenuate R, G and B to "
+                         "count as dust, 0 to 1. 0 drops only this agreement "
+                         "check; the detector always measures the SMALLEST of "
+                         "the three attenuations, so a defect in one dye layer "
+                         "alone is never repaired either way "
+                         f"(default: {despeck_mod.DEFAULT_NEUTRALITY})")
+    sp.add_argument("--despeck-floor-percentile", type=float, metavar="P",
+                    dest="despeck_floor_percentile",
+                    help="frame percentile taken as the densest real film; "
+                         "nothing below it is repaired, which is what keeps "
+                         "specular highlights out of the mask. 0 disables the "
+                         "test — useful for faint dust on a thin, contrasty "
+                         "negative, at the cost of that protection "
+                         f"(default: {despeck_mod.DEFAULT_FLOOR_PERCENTILE})")
+    sp.add_argument("--despeck-mask", action="store_true",
+                    help="also write the defect mask beside each output, to "
+                         "check the detector by eye before trusting it")
     sp.add_argument("-n", "--dry-run", action="store_true",
                     help="show what would happen; decode, write and delete "
                          "nothing")
