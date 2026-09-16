@@ -4,8 +4,10 @@ and (opt-in) permanently delete the source RAWs.
 
 Two output formats, chosen per plan: a linear TIFF (the compact archival form,
 tiff.py) or a linear DNG (opens through a converter's RAW pipeline, dng.py).
-They carry identical pixels; only the container and its metadata differ. This
-module treats them interchangeably — the deletion rules below hold for both.
+They carry identical pixels; only the container and its metadata differ — a DNG
+also carries the triplet's first frame's camera metadata, so that deleting the
+originals does not take the capture data with them. This module treats the two
+interchangeably: the deletion rules below hold for both.
 
 Deletion safety is the whole point of this module, so the rules are explicit:
 
@@ -68,13 +70,20 @@ def unique_output_path(folder: str, stem: str,
     return out
 
 
-def _write_output(path: str, merged, fmt: str, icc: bool) -> None:
-    """Write a merged frame in `fmt`. `icc` is a TIFF-only concern — DNG states
-    linearity in its own tags and ignores embedded ICC profiles entirely."""
+def _write_output(path: str, merged, fmt: str, icc: bool,
+                  source: Optional[str] = None) -> Optional[str]:
+    """Write a merged frame in `fmt`, returning a warning string when the file
+    is complete but something about it fell short (today: a DNG whose source
+    metadata could not be read).
+
+    `icc` is a TIFF-only concern — DNG states linearity in its own tags and
+    ignores embedded ICC profiles entirely. `source` is the triplet's first
+    frame, whose camera metadata the DNG carries (dng.py); the TIFF is pixels
+    and linearity only, and takes nothing from it."""
     if fmt == FORMAT_DNG:
-        dng_mod.write_linear_dng(path, merged)
-    else:
-        tiff_mod.write_linear_tiff(path, merged, icc=icc)
+        return dng_mod.write_linear_dng(path, merged, source=source)
+    tiff_mod.write_linear_tiff(path, merged, icc=icc)
+    return None
 
 
 def _verify_output(path: str, fmt: str, expect_shape) -> None:
@@ -107,6 +116,9 @@ class JobResult:
     job: Job
     size: Optional[Tuple[int, int]] = None      # (H, W) of the written image
     error: Optional[str] = None
+    # Written, verified and safe to delete the sources of — but with something
+    # worth saying about it (a DNG that could not carry its source's metadata).
+    warning: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -244,7 +256,8 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
             merged, full_size = merge_mod.merge_raw_channels(
                 job.sources, preview=False, demosaic=demosaic,
                 light_order=light_order)
-            _write_output(job.output, merged, job.fmt, icc)
+            warning = _write_output(job.output, merged, job.fmt, icc,
+                                    source=job.sources[0])
             del merged                        # a full-res 16-bit RGB frame
             _verify_output(job.output, job.fmt, full_size)
         except Exception as e:
@@ -258,7 +271,8 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
             except OSError:
                 pass
             continue
-        summary.results.append(JobResult(job=job, size=tuple(full_size)))
+        summary.results.append(JobResult(job=job, size=tuple(full_size),
+                                         warning=warning))
 
     if summary.cancelled:
         # Abort cleanly: nothing is ever deleted, and the files written so far

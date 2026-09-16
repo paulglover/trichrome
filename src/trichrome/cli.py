@@ -71,6 +71,12 @@ def cmd_merge(args) -> int:
     for r in summary.written:
         h, w = r.size or (0, 0)
         print(f"wrote {r.job.output}  ({w}x{h}, uint16)")
+    # The file is written and verified; something about it is worth knowing —
+    # today, a DNG whose source's camera metadata could not be read. Said before
+    # the deletion count, because that is the decision it bears on.
+    for r in summary.written:
+        if r.warning:
+            print(f"WARNING {r.job.name}: {r.warning}", file=sys.stderr)
     for r in summary.failures:
         print(f"FAILED {r.job.name}: {r.error}", file=sys.stderr)
     for path, reason in summary.delete_errors:

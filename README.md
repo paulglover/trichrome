@@ -11,7 +11,8 @@ green, once blue. This tool takes every consecutive triplet of RAWs and builds
 one full-colour image from them by keeping each frame's **own** colour channel
 and throwing the other two away. The result is the raw channel combination and
 nothing else, written as an archival linear TIFF — or, with `--format dng`, as a
-linear DNG that your converter opens through its **RAW** pipeline instead.
+linear DNG that your converter opens through its **RAW** pipeline instead and
+that carries the shoot's own camera metadata: date, body, lens, exposure.
 
 Extracted from [FreeCCR](https://github.com/paulglover/FreeCCR)'s 3-way RGB
 merge, stripped of the GUI, catalog, crop and colour pipeline. Standalone — it
@@ -109,6 +110,7 @@ treats the file when you open it.
 | Converter treats it as | a rendered image | a **RAW** file |
 | Raw white balance (Kelvin/tint) | no | yes |
 | Exposure applied | after the tone curve | before it, in stops |
+| Camera metadata (date, body, lens, exposure) | no | **yes**, from the first frame |
 | Compression | deflate + Predictor 2 | none (see below) |
 | Size, 6024×4024 | whatever deflate manages | 145 MB, always |
 | Says "I am linear" via | an ICC profile | its own `BlackLevel`/`WhiteLevel` tags |
@@ -215,6 +217,62 @@ process-version baseline is still its own.
 Treat the primaries as a placeholder exactly as with the TIFF, and grade from
 there.
 
+#### What it carries from the camera
+
+A converter is not just a viewer: it sorts, filters and groups by capture time,
+body and lens, and a file with none of that lands outside every collection it
+belongs to. That information exists only in the source RAWs — and
+`--delete-originals` is what destroys it.
+
+So a DNG carries it. From the triplet's **first** frame (the one the merged file
+is already named after, and the one whose name goes into `OriginalRawFileName`),
+trichrome copies:
+
+* the whole **EXIF IFD**, tag for tag — shutter, aperture, ISO, metering,
+  focal length, lens, the date and time, and whatever else the body recorded;
+* the **GPS IFD**;
+* `Make`, `Model`, `DateTime`, `Artist`, `Copyright` and `Orientation`;
+* `CameraSerialNumber`, `LensInfo` and `OriginalRawFileName`, the DNG spellings
+  a converter looks for in IFD0.
+
+Picking one of the three frames is not a compromise: the same body and lens shot
+all three, seconds apart, at the same settings. It is one answer written three
+times.
+
+Four things are deliberately **not** carried:
+
+* **The maker note.** Most vendors store its internal offsets relative to the
+  start of the file it was written in, so the block only means anything where it
+  was written. Everything standardised — including `LensModel` and
+  `LensSpecification` on any body of the last fifteen years — is in the EXIF IFD
+  proper and survives.
+* **XMP.** It records *edits* — crop, white balance, develop settings keyed to
+  the source's raw pipeline — which describe a different image than the merge.
+* **`PixelXDimension` / `PixelYDimension`**, which are restated for the merged
+  image rather than copied; a `--photosite` merge is half the source's size.
+* **`UniqueCameraModel`**, which stays `Trichrome 3-way RGB merge`. This is the
+  point of the split: the camera tags say what *took* the frames, while
+  `UniqueCameraModel` says what the *file* is, so a converter still resolves its
+  profile to the matrices above rather than to a profile for the body in `Make`.
+
+`Orientation` is copied because it is true of the merge too: the merge is
+unrotated sensor data, which is exactly what the source's tag is a claim about,
+so a sideways-mounted body's frames come up the right way.
+
+All of this is read in-process — a TIFF-structured raw (`.arw .nef .cr2 .dng
+.orf .pef .srw .rw2 .3fr`), Canon's `CMT` boxes in a `.cr3`, or the `APP1`
+segment of the JPEG inside a `.raf` — with no exiftool and no extra dependency.
+If a source's metadata cannot be read, the merge is still written and verified
+and the run says so:
+
+```
+WARNING img001_RGB.dng: no camera metadata copied from img001.arw: …
+```
+
+The merge is the part that cannot be reconstructed, and no metadata problem is
+worth losing it over. Worth reading before you rely on `--delete-originals`,
+though: after it, the warning is about data that no longer exists anywhere.
+
 #### Why it is uncompressed
 
 DNG's lossless choices are uncompressed and lossless JPEG. ZIP/deflate — what the
@@ -248,6 +306,11 @@ twice over a folder is safe — the second run simply finds nothing to do.
 * There is no confirmation prompt: passing the flag is the confirmation. Use
   `--dry-run` first to see exactly which files a run would delete.
 
+With `--format dng` the capture metadata survives the deletion (above); with
+`--format tiff` it does not, because a linear TIFF carries nothing but its
+pixels and its linearity. If you are deleting the originals, that is a reason to
+prefer the DNG.
+
 ## From digiKam, on macOS
 
 [`contrib/macos/`](contrib/macos/) has an AppleScript droplet and a build script
@@ -276,6 +339,11 @@ print(len(summary.written), "merged;", len(summary.failures), "failed")
 is settled at plan time because it decides the extension, and so the output path;
 each `Job` carries it, and `run_jobs` writes what the job says.
 
+`write_linear_dng(path, merged, source=first_raw)` is what carries the camera
+metadata over, and returns `None` or a one-line warning; `run_jobs` does this
+for you and puts the warning on the `JobResult`. `read_source_metadata(path)`
+reads a RAW's EXIF on its own.
+
 `merge_raw_channels(sources, demosaic=True, light_order="RGB")` returns
 `(uint16 HxWx3 array, (H, W))` if you just want the pixels. `run_jobs(...,
 icc=False)` is the library spelling of `--no-icc`, `linear_rgb_profile()` hands
@@ -292,11 +360,15 @@ pytest
 The decode is monkeypatched, so the suite needs no RAW files and runs in about a
 second. It covers the pure merge maths (CFA phase slicing, black/white-level
 normalisation, light order), the ICC profile field by field, the DNG's structure
-and colour metadata, and every deletion-safety rule above. The end-to-end tests
+and colour metadata, the camera metadata it carries over (read back with
+tifffile's own EXIF parser, out of hand-built TIFF, CR3 and RAF sources in both
+byte orders), and every deletion-safety rule above. The end-to-end tests
 build synthetic RAWs, run the real decode over them, and hand the written DNG
 back to libraw to confirm it decodes to the merge that went in. Where Pillow is installed — it is in the `dev`
 extra — the profile is also handed to littleCMS to confirm an independent colour
-engine accepts it and applies the linear curve.
+engine accepts it and applies the linear curve. Where exiftool is on `PATH`,
+one test also hands it a merged DNG to confirm an outside reader parses the
+metadata as an ordinary camera file's.
 
 ## Contributing
 
