@@ -105,6 +105,20 @@ always would, which is a different default, not a failure to read the file. The
 backward version is a claim about what a reader must UNDERSTAND to open the
 file, and nothing here has moved that.
 
+The camera's own metadata
+-------------------------
+The merge's pixels come from three RAWs, and so does everything a converter
+needs to file it: when it was shot, on what body, through what lens, at what
+exposure. `source=` hands this writer the triplet's FIRST frame and its EXIF
+IFD is copied into the DNG whole — the tags that describe the exposure, not the
+tags that describe the source's pixels. See exif.py for what is carried, what is
+deliberately not, and why the camera tags do not disturb `UniqueCameraModel`.
+
+It is best-effort by design. A source whose metadata cannot be read still gets
+merged and still gets written; the writer returns a warning instead of raising,
+because the pixels are the part that cannot be reconstructed and no metadata
+problem is worth losing them over.
+
 Compression
 -----------
 DNG's lossless choices are uncompressed and lossless JPEG. ZIP/deflate — what
@@ -127,6 +141,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import tifffile
 
+from . import exif as exif_mod
 from . import icc as icc_mod
 from . import tiff as tiff_mod
 
@@ -233,14 +248,20 @@ def is_merge_dng(path) -> bool:
 
 
 def write_linear_dng(path: str, merged: np.ndarray,
-                     version: Optional[str] = None) -> None:
+                     version: Optional[str] = None,
+                     source: Optional[str] = None) -> Optional[str]:
     """Write `merged` (H, W, 3 uint16 linear RGB) to `path` as an uncompressed
     linear DNG. Raises IOError on failure.
 
     The pixels written are exactly `merged`, unchanged — same bytes the TIFF
     writer would put down. Everything else in the file is metadata saying what
     they are: linear, black at 0, white at 65535, neutral at (1, 1, 1), toned by
-    nothing and blacked by nothing."""
+    nothing and blacked by nothing — and, from `source`, what took them.
+
+    `source` is the triplet's first frame, whose EXIF is copied in (exif.py).
+    Returns None when that succeeded or was not asked for, and a one-line
+    warning when it could not be done: the DNG is written and valid either way,
+    because a metadata problem must not cost the merge."""
     if merged.dtype != np.uint16 or merged.ndim != 3 or merged.shape[2] != 3:
         raise ValueError(f"expected an (H, W, 3) uint16 array, got "
                          f"shape={merged.shape} dtype={merged.dtype}")
@@ -270,18 +291,32 @@ def write_linear_dng(path: str, merged: np.ndarray,
     ]
     try:
         with tifffile.TiffWriter(os.path.normpath(path)) as tw:
+            # metadata=None drops tifffile's own {"shape": …} ImageDescription:
+            # it is a tifffile convention, meaningless to a DNG reader, and it
+            # would otherwise sit in the slot the source's own description goes.
             tw.write(_thumbnail(merged), photometric="rgb", compression=None,
                      subfiletype=1, subifds=1, extratags=ifd0_tags,
-                     software=tiff_mod.software_tag(version))
+                     metadata=None, software=tiff_mod.software_tag(version))
             # planarconfig is stated rather than left to be inferred: 34892 is
             # not a photometric tifffile treats as having samples, so without
             # this the (H, W, 3) array is written as H pages of W x 3 grey
             # instead of one RGB image — and DNG requires chunky data anyway.
             tw.write(merged, photometric=PHOTOMETRIC_LINEAR_RAW,
                      planarconfig="contig", compression=None, subfiletype=0,
-                     extratags=raw_tags)
+                     metadata=None, extratags=raw_tags)
     except Exception as e:
         raise IOError(f"failed to write {path}: {e}") from e
+    if source is None:
+        return None
+    # The file on disk is already a complete, valid DNG; what follows only adds
+    # to it, so anything that goes wrong here is reported, not raised.
+    try:
+        exif_mod.copy_into_dng(path, exif_mod.read_source_metadata(source),
+                               pixel_size=merged.shape[:2])
+    except Exception as e:
+        return (f"no camera metadata copied from "
+                f"{os.path.basename(source)}: {e}")
+    return None
 
 
 def _raw_page(tf: "tifffile.TiffFile"):

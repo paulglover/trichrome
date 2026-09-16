@@ -13,10 +13,11 @@ import numpy as np
 import pytest
 import tifffile
 
-from trichrome import bake, cli, dng, icc, merge, tiff
+from trichrome import bake, cli, dng, exif, icc, merge, tiff
 
 rawpy = pytest.importorskip("rawpy")
 
+import exiffixture as fx  # noqa: E402
 from dngfixture import rggb_mosaic, write_cfa_dng, write_triplet  # noqa: E402
 
 
@@ -247,3 +248,43 @@ def test_a_dng_run_over_a_folder_twice_does_not_eat_its_own_output(triplet):
     assert cli.main(["merge", str(shoot), "--format", "dng"]) == 2
     assert os.path.exists(merged)
     assert not os.path.exists(str(shoot / "frame1_RGB_RGB.dng"))
+
+
+def test_a_merged_dng_carries_its_first_frame_s_camera_metadata(triplet, tmp_path):
+    """The whole point, end to end: three real RAWs go in, and the file that
+    comes out still says when it was shot, on what, and through what lens —
+    while remaining a file libraw opens as the merge that went in."""
+    shoot, paths, expected = triplet
+    # Stamp the camera's metadata onto the frames, as a body would have. Only
+    # the first frame's is copied, so the other two get a different lens to
+    # prove which frame the merged file speaks for.
+    exif.copy_into_dng(paths[0],
+                       exif.read_source_metadata(
+                           fx.write_tiff_source(tmp_path / "body.arw")))
+    for other in paths[1:]:
+        exif.copy_into_dng(other, exif.read_source_metadata(
+            fx.write_tiff_source(tmp_path / "other.arw",
+                                 ifd0=[(271, fx._ascii("NOT THIS BODY"))])))
+
+    jobs = bake.plan_jobs(paths, out_dir=str(tmp_path / "out"), fmt="dng")
+    summary = bake.run_jobs(jobs)
+    assert [r.warning for r in summary.written] == [None]
+    out = summary.written[0].job.output
+
+    with tifffile.TiffFile(out) as tf:
+        tags = {t.code: t.value for t in tf.pages[0].tags.values()}
+    assert tags[271] == fx.MAKE and tags[272] == fx.MODEL
+    assert tags[34665]["LensModel"] == fx.LENS_MODEL
+    assert tags[34665]["DateTimeOriginal"] == fx.DATETIME
+    assert tags[50827] == os.path.basename(paths[0])
+    assert tags[50708] == dng.UNIQUE_CAMERA_MODEL      # still not a real camera
+
+    # And it is still a raw file, still the merge: libraw reads the same pixels
+    # out of it that it did before there was any metadata in it.
+    with rawpy.imread(out) as raw:
+        rgb = raw.postprocess(output_bps=16, no_auto_bright=True, gamma=(1, 1),
+                              user_flip=0, use_camera_wb=False,
+                              use_auto_wb=False, no_auto_scale=True,
+                              output_color=rawpy.ColorSpace.raw)
+    for ch, want in enumerate(expected):
+        assert abs(int(rgb[8:-8, 8:-8, ch].mean()) - want) <= 2, f"channel {ch}"
