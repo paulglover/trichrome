@@ -24,11 +24,6 @@ property trichromePath : ""
 -- Where to look, in order, before falling back to asking a login shell.
 property searchPaths : {"/opt/homebrew/bin/trichrome", "/usr/local/bin/trichrome", "/opt/local/bin/trichrome"}
 
--- Ask for the output format on every run. Set to false to always use
--- defaultFormat without prompting.
-property askForFormat : true
-property defaultFormat : "dng" -- "dng" or "tiff"
-
 -- DESTRUCTIVE. With this on, the source RAWs are permanently deleted once
 -- their merged file is written and verified. A confirmation is shown first —
 -- a stray double-click on a droplet should not be able to delete a shoot.
@@ -59,9 +54,6 @@ on mergeItems(theItems)
 	set toolPath to my findTrichrome()
 	if toolPath is missing value then return
 
-	set theFormat to my chooseFormat()
-	if theFormat is missing value then return
-
 	if deleteOriginals then
 		if not my confirmDeletion(count of theItems) then return
 	end if
@@ -76,7 +68,7 @@ on mergeItems(theItems)
 			with title "Trichrome"
 	end try
 
-	set theCommand to my buildCommand(toolPath, theFormat, posixPaths)
+	set theCommand to my buildCommand(toolPath, posixPaths)
 	try
 		set theOutput to do shell script theCommand
 	on error errorMessage number errorNumber
@@ -91,11 +83,11 @@ on mergeItems(theItems)
 end mergeItems
 
 
-on buildCommand(toolPath, theFormat, posixPaths)
+on buildCommand(toolPath, posixPaths)
 	(* The shell command, with every path quoted. Kept separate from the UI so
 	   it can be exercised without a screen; build-app.sh calls it directly as a
 	   self-test after compiling. *)
-	set theCommand to quoted form of toolPath & " merge --format " & theFormat
+	set theCommand to quoted form of toolPath & " merge"
 	if deleteOriginals then set theCommand to theCommand & " --delete-originals"
 	repeat with aPath in posixPaths
 		set theCommand to theCommand & " " & quoted form of (aPath as text)
@@ -137,25 +129,6 @@ on isExecutable(aPath)
 		return false
 	end try
 end isExecutable
-
-
-on chooseFormat()
-	if not askForFormat then return defaultFormat
-	try
-		set theButton to button returned of (display dialog ¬
-			"Merge into which format?" & return & return & ¬
-			"DNG opens through a converter's RAW pipeline — raw white balance, " & ¬
-			"exposure before the tone curve. Uncompressed, so larger." & return & return & ¬
-			"TIFF is compressed, universally readable, and opens as a rendered image." ¬
-			buttons {"Cancel", "TIFF", "DNG"} default button "DNG" ¬
-			with title "Trichrome Merge")
-	on error number -128
-		return missing value -- a button literally named Cancel raises this
-	end try
-	if theButton is "TIFF" then return "tiff"
-	if theButton is "DNG" then return "dng"
-	return missing value
-end chooseFormat
 
 
 on confirmDeletion(fileCount)

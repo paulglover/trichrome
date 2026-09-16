@@ -1,5 +1,5 @@
 """
-Tests for planning, TIFF output and the destructive delete-originals path.
+Tests for planning, the written file and the destructive delete-originals path.
 
 The RAW decode is monkeypatched (no real trichrome triplet is needed), so these
 cover exactly what the safety rules promise: verify before delete, never delete
@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from trichrome import bake, icc, merge, tiff
+from trichrome import bake, dng, merge
 
 
 class FakeDecoder:
@@ -98,8 +98,8 @@ def test_plan_groups_in_filename_order_and_names_after_the_first_frame(tmp_path)
     assert len(jobs) == 2
     assert [os.path.basename(s) for s in jobs[0].sources] == \
         ["img001.arw", "img002.arw", "img003.arw"]
-    assert os.path.basename(jobs[0].output) == "img001_RGB.tif"
-    assert os.path.basename(jobs[1].output) == "img004_RGB.tif"
+    assert os.path.basename(jobs[0].output) == "img001_RGB.dng"
+    assert os.path.basename(jobs[1].output) == "img004_RGB.dng"
 
 
 def test_plan_rejects_a_count_that_is_not_a_multiple_of_three(tmp_path):
@@ -116,9 +116,9 @@ def test_plan_writes_into_out_dir_when_given(tmp_path):
 
 def test_plan_never_reuses_an_existing_filename(tmp_path):
     files = raws(tmp_path, 3)
-    (tmp_path / "img001_RGB.tif").write_bytes(b"already here")
+    (tmp_path / "img001_RGB.dng").write_bytes(b"already here")
     jobs = bake.plan_jobs(files)
-    assert os.path.basename(jobs[0].output) == "img001_RGB_2.tif"
+    assert os.path.basename(jobs[0].output) == "img001_RGB_2.dng"
 
 
 def test_plan_reserves_names_so_two_folders_cannot_collide_in_one_out_dir(tmp_path):
@@ -131,58 +131,26 @@ def test_plan_reserves_names_so_two_folders_cannot_collide_in_one_out_dir(tmp_pa
 # --------------------------------------------------------------------------- #
 # run_jobs — the happy path and the written file
 # --------------------------------------------------------------------------- #
-def test_run_writes_a_verified_uint16_rgb_tiff(tmp_path, fake_decode):
+def test_run_writes_a_verified_uint16_rgb_dng(tmp_path, fake_decode):
     jobs = bake.plan_jobs(raws(tmp_path, 3))
     summary = bake.run_jobs(jobs)
     assert len(summary.written) == 1 and not summary.failures
-    out = jobs[0].output
-    data = tifffile.imread(out)
+    data = dng.read_linear_dng(jobs[0].output)
     assert data.shape == (6, 8, 3) and data.dtype == np.uint16
     assert data[0, 0, 0] == 1000 and data[0, 0, 2] == 3000
 
 
-def test_written_tiff_carries_the_freeccr_marker(tmp_path, fake_decode):
+def test_the_written_file_carries_the_freeccr_marker(tmp_path, fake_decode):
     jobs = bake.plan_jobs(raws(tmp_path, 3))
     bake.run_jobs(jobs)
-    assert tiff.is_merge_tiff(jobs[0].output)
+    assert dng.is_merge_dng(jobs[0].output)
     with tifffile.TiffFile(jobs[0].output) as tf:
-        assert tiff.FREECCR_MERGE_TIFF_MARKER in tf.pages[0].tags["Software"].value
+        assert dng.FREECCR_MERGE_MARKER in tf.pages[0].tags["Software"].value
 
 
-def test_written_tiff_carries_the_linear_icc_profile(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    bake.run_jobs(jobs)
-    assert tiff.embedded_icc_profile(jobs[0].output) == icc.linear_rgb_profile()
-
-
-def test_icc_false_writes_an_untagged_tiff(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    bake.run_jobs(jobs, icc=False)
-    assert tiff.embedded_icc_profile(jobs[0].output) is None
-
-
-def test_the_profile_changes_tags_only_and_never_a_pixel(tmp_path, fake_decode):
-    """The archival promise: embedding the profile must leave the image data
-    bit-for-bit what the merge produced."""
-    tagged = bake.plan_jobs(raws(tmp_path, 3, folder="a"))
-    untagged = bake.plan_jobs(raws(tmp_path, 3, folder="b"))
-    bake.run_jobs(tagged, icc=True)
-    bake.run_jobs(untagged, icc=False)
-    assert np.array_equal(tifffile.imread(tagged[0].output),
-                          tifffile.imread(untagged[0].output))
-
-
-def test_the_profile_does_not_disturb_the_freeccr_marker(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    bake.run_jobs(jobs)
-    assert tiff.is_merge_tiff(jobs[0].output)
-
-
-def test_embedded_icc_profile_is_none_for_a_tiff_written_by_anything_else(
-        tmp_path):
-    plain = str(tmp_path / "plain.tif")
-    tifffile.imwrite(plain, np.zeros((4, 4, 3), np.uint16), photometric="rgb")
-    assert tiff.embedded_icc_profile(plain) is None
+def test_every_output_is_named_dng(tmp_path, fake_decode):
+    jobs = bake.plan_jobs(raws(tmp_path, 6))
+    assert all(j.output.endswith(".dng") for j in jobs)
 
 
 def test_run_forwards_demosaic_and_light_order_to_the_decoder(tmp_path, fake_decode):
@@ -212,7 +180,7 @@ def test_delete_originals_removes_the_sources_after_a_verified_write(tmp_path,
     assert os.path.exists(jobs[0].output)
 
 
-def test_a_failed_triplet_keeps_its_sources_and_leaves_no_partial_tiff(tmp_path,
+def test_a_failed_triplet_keeps_its_sources_and_leaves_no_partial_file(tmp_path,
                                                                        fake_decode):
     files = raws(tmp_path, 6)
     fake_decode.boom = "img005"                 # kills the SECOND triplet
@@ -233,8 +201,8 @@ def test_a_source_shared_with_a_failed_triplet_is_never_deleted(tmp_path,
     fails. Nothing may be deleted — a frame's only copy is never orphaned by a
     triplet that still needs it."""
     files = raws(tmp_path, 3)
-    good = bake.Job(sources=tuple(files), output=str(tmp_path / "good.tiff"))
-    bad = bake.Job(sources=tuple(files), output=str(tmp_path / "bad.tiff"))
+    good = bake.Job(sources=tuple(files), output=str(tmp_path / "good.dng"))
+    bad = bake.Job(sources=tuple(files), output=str(tmp_path / "bad.dng"))
     fail_after = {"n": 0}
     inner = fake_decode
 
@@ -252,10 +220,10 @@ def test_a_source_shared_with_a_failed_triplet_is_never_deleted(tmp_path,
     assert all(os.path.exists(f) for f in files)
 
 
-def test_a_tiff_that_fails_verification_blocks_the_delete(tmp_path, fake_decode,
+def test_a_file_that_fails_verification_blocks_the_delete(tmp_path, fake_decode,
                                                           monkeypatch):
     files = raws(tmp_path, 3)
-    monkeypatch.setattr(bake.tiff_mod, "verify_linear_tiff",
+    monkeypatch.setattr(bake.dng_mod, "verify_linear_dng",
                         lambda *a, **k: (_ for _ in ()).throw(
                             IOError("verification failed")))
     summary = bake.run_jobs(bake.plan_jobs(files), delete_originals=True)
@@ -291,46 +259,43 @@ def test_dry_run_touches_nothing(tmp_path, fake_decode):
 
 
 # --------------------------------------------------------------------------- #
-# tiff helpers
+# the written file's own guards
 # --------------------------------------------------------------------------- #
-def test_verify_rejects_a_wrong_sized_tiff(tmp_path):
-    p = str(tmp_path / "small.tiff")
-    tifffile.imwrite(p, np.zeros((4, 4, 3), np.uint16), photometric="rgb")
-    tiff.verify_linear_tiff(p, expect_shape=(4, 4))
-    with pytest.raises(IOError, match="expected"):
-        tiff.verify_linear_tiff(p, expect_shape=(6, 8))
+def test_verify_rejects_a_wrong_sized_file(tmp_path, fake_decode):
+    jobs = bake.plan_jobs(raws(tmp_path, 3))
+    bake.run_jobs(jobs)
+    out = jobs[0].output
+    dng.verify_linear_dng(out, expect_shape=(6, 8))
+    with pytest.raises(IOError):
+        dng.verify_linear_dng(out, expect_shape=(6, 9))
 
 
-def test_verify_rejects_an_8_bit_or_grayscale_tiff(tmp_path):
-    p8 = str(tmp_path / "eight.tiff")
-    tifffile.imwrite(p8, np.zeros((4, 4, 3), np.uint8), photometric="rgb")
+def test_verify_rejects_a_file_that_is_not_one_of_ours(tmp_path):
+    plain = str(tmp_path / "plain.dng")
+    tifffile.imwrite(plain, np.zeros((4, 4, 3), np.uint16), photometric="rgb")
     with pytest.raises(IOError):
-        tiff.verify_linear_tiff(p8)
-    pg = str(tmp_path / "grey.tiff")
-    tifffile.imwrite(pg, np.zeros((4, 4), np.uint16))
-    with pytest.raises(IOError):
-        tiff.verify_linear_tiff(pg)
+        dng.verify_linear_dng(plain)
 
 
 def test_verify_rejects_a_missing_or_empty_file(tmp_path):
     with pytest.raises(IOError):
-        tiff.verify_linear_tiff(str(tmp_path / "nope.tiff"))
-    empty = tmp_path / "empty.tiff"
+        dng.verify_linear_dng(str(tmp_path / "nope.dng"))
+    empty = tmp_path / "empty.dng"
     empty.write_bytes(b"")
     with pytest.raises(IOError):
-        tiff.verify_linear_tiff(str(empty))
+        dng.verify_linear_dng(str(empty))
 
 
-def test_write_rejects_anything_that_is_not_uint16_rgb(tmp_path):
+def test_writing_rejects_an_array_that_is_not_a_merge(tmp_path):
     with pytest.raises(ValueError):
-        tiff.write_linear_tiff(str(tmp_path / "x.tiff"),
-                               np.zeros((4, 4, 3), np.uint8))
+        dng.write_linear_dng(str(tmp_path / "x.dng"),
+                             np.zeros((4, 4, 3), np.uint8))
 
 
-def test_is_merge_tiff_is_false_for_a_plain_tiff_and_a_non_tiff(tmp_path):
-    plain = str(tmp_path / "plain.tiff")
+def test_is_merge_dng_is_false_for_a_plain_dng_and_a_non_dng(tmp_path):
+    plain = str(tmp_path / "plain.dng")
     tifffile.imwrite(plain, np.zeros((4, 4, 3), np.uint16), photometric="rgb")
-    assert not tiff.is_merge_tiff(plain)
-    other = tmp_path / "x.arw"
-    other.write_bytes(b"x")
-    assert not tiff.is_merge_tiff(str(other))
+    assert not dng.is_merge_dng(plain)
+    other = tmp_path / "notes.txt"
+    other.write_text("hi")
+    assert not dng.is_merge_dng(str(other))

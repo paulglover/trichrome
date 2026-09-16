@@ -2,12 +2,9 @@
 Batch orchestration: plan triplets, merge each, write a verified linear file,
 and (opt-in) permanently delete the source RAWs.
 
-Two output formats, chosen per plan: a linear TIFF (the compact archival form,
-tiff.py) or a linear DNG (opens through a converter's RAW pipeline, dng.py).
-They carry identical pixels; only the container and its metadata differ — a DNG
-also carries the triplet's first frame's camera metadata, so that deleting the
-originals does not take the capture data with them. This module treats the two
-interchangeably: the deletion rules below hold for both.
+One output format: a linear DNG (dng.py), which a converter opens through its
+RAW pipeline and which carries the triplet's first frame's camera metadata, so
+that deleting the originals does not take the capture data with them.
 
 Deletion safety is the whole point of this module, so the rules are explicit:
 
@@ -27,39 +24,12 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import dng as dng_mod
 from . import merge as merge_mod
-from . import tiff as tiff_mod
 
 DEFAULT_NAME_SUFFIX = "_RGB"
 
-# Output formats, in the spelling the CLI's --format takes.
-FORMAT_TIFF = "tiff"
-FORMAT_DNG = "dng"
-DEFAULT_FORMAT = FORMAT_TIFF
-OUTPUT_FORMATS = (FORMAT_TIFF, FORMAT_DNG)
-
-_EXTENSIONS = {FORMAT_TIFF: tiff_mod.OUTPUT_EXTENSION,
-               FORMAT_DNG: dng_mod.OUTPUT_EXTENSION}
-
-
-def normalise_format(fmt: str) -> str:
-    """Validate an output format name and return its canonical spelling.
-
-    Raises ValueError with a user-facing message for anything else, so a typo is
-    caught while planning rather than after the first decode."""
-    name = str(fmt).lower().strip()
-    if name not in _EXTENSIONS:
-        raise ValueError(f"unknown output format {fmt!r}; expected one of "
-                         + ", ".join(OUTPUT_FORMATS))
-    return name
-
-
-def output_extension(fmt: str = DEFAULT_FORMAT) -> str:
-    """The file extension written for an output format."""
-    return _EXTENSIONS[normalise_format(fmt)]
-
 
 def unique_output_path(folder: str, stem: str,
-                       ext: str = tiff_mod.OUTPUT_EXTENSION) -> str:
+                       ext: str = dng_mod.OUTPUT_EXTENSION) -> str:
     """`folder/stem<ext>`, with a numeric suffix if that name is already taken —
     this tool NEVER overwrites an existing file."""
     out = os.path.join(folder, stem + ext)
@@ -70,41 +40,11 @@ def unique_output_path(folder: str, stem: str,
     return out
 
 
-def _write_output(path: str, merged, fmt: str, icc: bool,
-                  source: Optional[str] = None) -> Optional[str]:
-    """Write a merged frame in `fmt`, returning a warning string when the file
-    is complete but something about it fell short (today: a DNG whose source
-    metadata could not be read).
-
-    `icc` is a TIFF-only concern — DNG states linearity in its own tags and
-    ignores embedded ICC profiles entirely. `source` is the triplet's first
-    frame, whose camera metadata the DNG carries (dng.py); the TIFF is pixels
-    and linearity only, and takes nothing from it."""
-    if fmt == FORMAT_DNG:
-        return dng_mod.write_linear_dng(path, merged, source=source)
-    tiff_mod.write_linear_tiff(path, merged, icc=icc)
-    return None
-
-
-def _verify_output(path: str, fmt: str, expect_shape) -> None:
-    """Confirm a just-written file really is the image it claims, BEFORE its
-    sources can be deleted. Raises IOError on any mismatch."""
-    if fmt == FORMAT_DNG:
-        dng_mod.verify_linear_dng(path, expect_shape=expect_shape)
-    else:
-        tiff_mod.verify_linear_tiff(path, expect_shape=expect_shape)
-
-
 @dataclass
 class Job:
-    """One planned merge: three source RAWs → one output file.
-
-    `fmt` is settled at plan time because it decides the extension, and so the
-    output path — carrying it on the job is what keeps the two from drifting
-    apart between planning and writing."""
+    """One planned merge: three source RAWs → one output file."""
     sources: Tuple[str, str, str]
     output: str
-    fmt: str = DEFAULT_FORMAT
 
     @property
     def name(self) -> str:
@@ -154,8 +94,8 @@ def collect_raw_files(inputs: Sequence[str], recursive: bool = False) -> List[st
 
     Directories contribute their RAW files (recursively with `recursive=True`),
     EXCEPT this tool's own merged DNGs — `.dng` is a supported RAW extension, so
-    without that exclusion a `--format dng` run would pick its own output back up
-    as a source the second time it was run over a folder. Explicitly named files
+    without that exclusion a run would pick its own output back up as a source
+    the second time it was run over a folder. Explicitly named files
     are taken as given, RAW or not, so that a wrong file is REPORTED by
     validation rather than silently skipped."""
     out: List[str] = []
@@ -184,20 +124,18 @@ def collect_raw_files(inputs: Sequence[str], recursive: bool = False) -> List[st
 
 
 def plan_jobs(paths: Sequence[str], out_dir: Optional[str] = None,
-              suffix: str = DEFAULT_NAME_SUFFIX,
-              fmt: str = DEFAULT_FORMAT) -> List[Job]:
+              suffix: str = DEFAULT_NAME_SUFFIX) -> List[Job]:
     """Sort, validate and group `paths` into merge jobs with output paths.
 
     Output goes next to the triplet's first frame unless `out_dir` is given, and
-    is named `<first frame stem><suffix>` plus `fmt`'s extension (`.tif` or
-    `.dng`). Existing files are never overwritten: a numeric suffix is added, and
-    names claimed earlier in this same plan are reserved too (so two triplets
-    from different folders cannot collide when writing into one `out_dir`).
+    is named `<first frame stem><suffix>.dng`. Existing files are never
+    overwritten: a numeric suffix is added, and names claimed earlier in this
+    same plan are reserved too (so two triplets from different folders cannot
+    collide when writing into one `out_dir`).
 
     Raises ValueError with a user-facing message when the batch is invalid
-    (empty, non-RAW files present, not a multiple of 3, or an unknown `fmt`)."""
-    fmt = normalise_format(fmt)
-    ext = _EXTENSIONS[fmt]
+    (empty, non-RAW files present, or not a multiple of 3)."""
+    ext = dng_mod.OUTPUT_EXTENSION
     ordered = merge_mod.sort_for_merge(paths)
     ok, err = merge_mod.validate_merge_inputs(ordered)
     if not ok:
@@ -215,26 +153,18 @@ def plan_jobs(paths: Sequence[str], out_dir: Optional[str] = None,
             out = os.path.join(folder, f"{stem}_{n}{ext}")
             n += 1
         claimed.add(os.path.normcase(out))
-        jobs.append(Job(sources=triplet, output=out, fmt=fmt))
+        jobs.append(Job(sources=triplet, output=out))
     return jobs
 
 
 def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
              light_order: str = merge_mod.DEFAULT_LIGHT_ORDER,
              delete_originals: bool = False, dry_run: bool = False,
-             icc: bool = True,
              progress_cb: Optional[Callable[[int, int, Job], None]] = None,
              cancel_flag: Optional[Callable[[], bool]] = None) -> Summary:
-    """Merge every job, write + verify its linear output, then — only with
+    """Merge every job, write + verify its linear DNG, then — only with
     `delete_originals` — permanently delete the source RAWs of the jobs that
     succeeded. See the module docstring for the exact deletion rules.
-
-    Each job carries the format it was planned for (`Job.fmt`), so a plan made
-    for DNGs cannot be run as TIFFs into `.dng` filenames.
-
-    `icc` embeds the linear ICC profile in each TIFF (see tiff.py); it changes
-    tags only, never pixels, so it has no bearing on deletion safety. DNG output
-    ignores it — that format states its own linearity (see dng.py).
 
     `progress_cb(index, total, job)` is called before each job starts.
     `cancel_flag()` is polled between jobs; returning True aborts cleanly."""
@@ -256,10 +186,15 @@ def run_jobs(jobs: Sequence[Job], demosaic: bool = True,
             merged, full_size = merge_mod.merge_raw_channels(
                 job.sources, preview=False, demosaic=demosaic,
                 light_order=light_order)
-            warning = _write_output(job.output, merged, job.fmt, icc,
-                                    source=job.sources[0])
+            # The first frame's camera metadata rides along with the pixels;
+            # `warning` is set when it could not be read, which is worth saying
+            # but never worth failing a merge over (dng.py).
+            warning = dng_mod.write_linear_dng(job.output, merged,
+                                               source=job.sources[0])
             del merged                        # a full-res 16-bit RGB frame
-            _verify_output(job.output, job.fmt, full_size)
+            # Before anything can be deleted: the file on disk really is the
+            # image it claims, at the size the merge produced.
+            dng_mod.verify_linear_dng(job.output, expect_shape=full_size)
         except Exception as e:
             summary.results.append(JobResult(job=job, error=str(e)))
             bad_sources.update(os.path.normcase(os.path.abspath(s))

@@ -1,8 +1,8 @@
 """
 Camera metadata carried from a triplet's first source RAW into the merged DNG.
 
-Why the DNG needs it and the TIFF does not
-------------------------------------------
+Why the file needs it
+---------------------
 A merged file is the only thing left after `--delete-originals`, and a raw
 converter is not just a viewer: Lightroom, Capture One and darktable sort,
 filter and group by capture time, camera body and lens, and a file with none of
@@ -11,8 +11,8 @@ that lands outside every collection it belongs to. The pixels are the merge, but
 source RAWs, and deleting them is what destroys it.
 
 DNG has somewhere to put it — an EXIF IFD, which every converter reads — so the
-DNG carries it. The TIFF deliberately stays as it is: an archival intermediate
-that claims nothing beyond its pixels and its linearity.
+merged file carries it, and stays a photograph rather than becoming an anonymous
+grid of pixels.
 
 Which frame it comes from
 -------------------------

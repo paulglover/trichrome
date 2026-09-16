@@ -89,8 +89,8 @@ touch "$app"
 # --- Self-test: the command builder, without needing a screen ------------- #
 built=$(osascript \
     -e "set s to load script POSIX file \"$app/Contents/Resources/Scripts/main.scpt\"" \
-    -e 'tell s to buildCommand("/usr/bin/true", "dng", {"/a b/one.arw", "/two.arw"})')
-expected="'/usr/bin/true' merge --format dng '/a b/one.arw' '/two.arw' 2>&1"
+    -e 'tell s to buildCommand("/usr/bin/true", {"/a b/one.arw", "/two.arw"})')
+expected="'/usr/bin/true' merge '/a b/one.arw' '/two.arw' 2>&1"
 if [ "$built" != "$expected" ]; then
     echo "SELF-TEST FAILED" >&2
     echo "  built:    $built" >&2

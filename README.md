@@ -3,16 +3,16 @@
 [![CI](https://github.com/paulglover/trichrome/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paulglover/trichrome/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/paulglover/trichrome?label=release)](https://github.com/paulglover/trichrome/releases)
 
-Merge red/green/blue-light RAW triplets into 16-bit **linear** TIFFs or DNGs,
-then (optionally) delete the source RAWs.
+Merge red/green/blue-light RAW triplets into 16-bit **linear DNGs**, then
+(optionally) delete the source RAWs.
 
 You shoot one static scene three times — once under a pure red light, once
 green, once blue. This tool takes every consecutive triplet of RAWs and builds
 one full-colour image from them by keeping each frame's **own** colour channel
 and throwing the other two away. The result is the raw channel combination and
-nothing else, written as an archival linear TIFF — or, with `--format dng`, as a
-linear DNG that your converter opens through its **RAW** pipeline instead and
-that carries the shoot's own camera metadata: date, body, lens, exposure.
+nothing else, written as a linear DNG that your converter opens through its
+**RAW** pipeline and that carries the shoot's own camera metadata: date, body,
+lens, exposure.
 
 Extracted from [FreeCCR](https://github.com/paulglover/FreeCCR)'s 3-way RGB
 merge, stripped of the GUI, catalog, crop and colour pipeline. Standalone — it
@@ -21,7 +21,7 @@ is not intended to merge back.
 ## Install
 
 ```bash
-pip install -e .            # needs numpy, rawpy, tifffile, imagecodecs
+pip install -e .            # needs numpy, rawpy, tifffile
 ```
 
 Python 3.9+.
@@ -30,8 +30,7 @@ Python 3.9+.
 
 ```bash
 trichrome list ./shoot                        # show the triplet grouping first
-trichrome merge ./shoot                       # write TIFFs, keep the RAWs
-trichrome merge ./shoot --format dng          # linear DNGs instead
+trichrome merge ./shoot                       # write DNGs, keep the RAWs
 trichrome merge ./shoot --out ./merged        # write them somewhere else
 trichrome merge ./shoot --dry-run             # plan only, decode nothing
 trichrome merge ./shoot --delete-originals    # destructive; no prompt
@@ -39,12 +38,12 @@ trichrome merge ./shoot --delete-originals    # destructive; no prompt
 
 ```
 $ trichrome merge ./shoot
-2 triplet(s) · light order RGB · demosaic (full resolution)
-[1/2] img001.arw + img002.arw + img003.arw  ->  img001_RGB.tif
-[2/2] img004.arw + img005.arw + img006.arw  ->  img004_RGB.tif
+2 triplet(s) · light order RGB · demosaic (full resolution) · linear DNG
+[1/2] img001.arw + img002.arw + img003.arw  ->  img001_RGB.dng
+[2/2] img004.arw + img005.arw + img006.arw  ->  img004_RGB.dng
 
-wrote /shoot/img001_RGB.tif  (6024x4024, uint16)
-wrote /shoot/img004_RGB.tif  (6024x4024, uint16)
+wrote /shoot/img001_RGB.dng  (6024x4024, uint16)
+wrote /shoot/img004_RGB.dng  (6024x4024, uint16)
 
 2 merged, 0 failed
 ```
@@ -55,11 +54,9 @@ wrote /shoot/img004_RGB.tif  (6024x4024, uint16)
 | --- | --- |
 | `-r, --recursive` | descend into subfolders of an input folder |
 | `-o, --out DIR` | write the merged files here instead of beside each triplet's first frame |
-| `--format tiff\|dng` | container to write — see *The output file* below (default `tiff`) |
-| `--suffix S` | output name is `<first frame><S>` plus the format's extension (default `_RGB`) |
+| `--suffix S` | output name is `<first frame><S>.dng` (default `_RGB`) |
 | `--order RGB` | which light each frame of a triplet was shot under, in filename order — `BGR` if you shot blue first |
 | `--demosaic` / `--photosite` | see *Two ways to extract a channel* below (default `--demosaic`) |
-| `--no-icc` | write a strictly untagged TIFF, with no linear ICC profile (no effect on `--format dng`) |
 | `--delete-originals` | permanently delete each triplet's RAWs once its merged file verifies |
 | `-n, --dry-run` | show what would happen; decode, write and delete nothing |
 
@@ -101,77 +98,38 @@ triplet must be the same sensor type.
 
 ## The output file
 
-Two containers, one merge. The **pixels are identical either way** — the same
-16-bit linear numbers, at the same resolution. What differs is how a converter
-treats the file when you open it.
+One container: a **linear DNG** (`PhotometricInterpretation = 34892`, LinearRaw,
+three samples per pixel). It holds the merge exactly as it came out — 16-bit
+linear RGB at full resolution, no orientation applied, no inversion, no
+adjustment — and everything else in it is metadata saying what those numbers are
+and where they came from.
 
-| | `--format tiff` (default) | `--format dng` |
-| --- | --- | --- |
-| Converter treats it as | a rendered image | a **RAW** file |
-| Raw white balance (Kelvin/tint) | no | yes |
-| Exposure applied | after the tone curve | before it, in stops |
-| Camera metadata (date, body, lens, exposure) | no | **yes**, from the first frame |
-| Compression | deflate + Predictor 2 | none (see below) |
-| Size, 6024×4024 | whatever deflate manages | 145 MB, always |
-| Says "I am linear" via | an ICC profile | its own `BlackLevel`/`WhiteLevel` tags |
-
-Both carry FreeCCR's merge marker (`FreeCCR:3-way-RGB-merge-linear-v1`) in the
+It carries FreeCCR's merge marker (`FreeCCR:3-way-RGB-merge-linear-v1`) in the
 `Software` tag, so a file this tool writes opens in FreeCCR as a normal image
 even while FreeCCR's own 3-way merge mode is on.
 
-### The linear TIFF
+### Why a RAW container and not a rendered one
 
-A 16-bit RGB TIFF, deflate-compressed with Predictor 2 (lossless, universally
-readable, ~1.3–2× smaller than plain deflate on 16-bit continuous-tone data),
-linear, carrying a linear ICC profile. It is the archival form: compact, opens
-anywhere, and claims nothing about colour that it cannot back up.
+A TIFF or a PNG is an *already-rendered* image as far as Lightroom, ACR, Capture
+One and darktable are concerned: no camera profile, no raw white balance, no
+highlight reconstruction, and exposure applied after the tone curve rather than
+before it.
 
-#### Why it carries a profile
-
-The data is scene-linear. Nothing in a bare TIFF says so, so a colour-managed
-viewer assumes sRGB and decodes the linear numbers through an sRGB curve — which
-shows a perfectly good merge about **1.4 stops dark at the midtones** and nearly
-3 in the shadows. A linear 0.18 midtone sits at 46/255 in the file and should
-display around 118/255; untagged, it displays at 46.
-
-So each TIFF gets a 568-byte ICC v2 profile whose three tone curves are the
-identity. Be clear about what it does and does not claim:
-
-* **The tone curve is exact.** The data really is linear, and `curv` with a count
-  of zero is the ICC spelling of "identity" — not a gamma of 1.0 approximated by
-  a sampled table.
-* **The primaries are a convention, not a measurement.** A merge is camera-native
-  RGB, and it is not colorimetric anyway: each channel came from a separate
-  exposure under its own narrow-band light, at whatever relative brightness those
-  lights happened to have. No matrix profile can describe that honestly. An ICC
-  matrix/TRC profile has to name primaries, so this one names sRGB's — the
-  ordinary scene-linear working-space assumption, and the one least likely to
-  send a converter through a bogus colorimetric transform.
-
-Trust the curve and treat the primaries as a placeholder.
-
-The profile is metadata only: **the image data is byte-identical with or without
-it.** `--no-icc` leaves it out if you want a strictly untagged file.
-
-### The linear DNG
-
-A TIFF is a *rendered* image as far as Lightroom, ACR, Capture One and darktable
-are concerned: no raw white balance, no camera profile, no highlight
-reconstruction, and exposure applied after the tone curve rather than before it.
-
-`--format dng` writes the same pixels as a **linear DNG** instead
-(`PhotometricInterpretation = 34892`, LinearRaw, three samples per pixel), which
-those converters ingest through the RAW pipeline. That gets you white balance as
-a Kelvin/tint pair — the usual way to neutralise a negative's orange mask — and
-exposure in stops ahead of the curve. For a scan heading into a negative
-conversion, that is the difference between grading with the raw controls and
-grading without them.
+A DNG is ingested through the **RAW pipeline** instead. That gets you white
+balance as a Kelvin/tint pair — the usual way to neutralise a negative's orange
+mask — and exposure in stops ahead of the curve. For a scan heading into a
+negative conversion, that is the difference between grading with the raw
+controls and grading without them.
 
 It also lets the file say what it is without a workaround. The merge is
 scene-linear data bounded by a black and a white level, and DNG has tags for
 exactly that: `BlackLevel` is 0 and `WhiteLevel` is 65535, which is what the
-merge already normalised to. (DNG ignores embedded ICC profiles, so `--no-icc`
-does nothing here.)
+merge already normalised to. A rendered format has nowhere to put that claim, so
+a colour-managed viewer assumes sRGB and decodes the linear numbers through an
+sRGB curve — which shows a perfectly good merge about **1.4 stops dark at the
+midtones** and nearly 3 in the shadows. (Tagging such a file with a linear ICC
+profile is the usual workaround for that; DNG ignores embedded ICC profiles
+entirely, and needs none.)
 
 The file is laid out as the spec prescribes: a small sRGB-encoded thumbnail in
 IFD0 — a preview only, and the one place in this tool where a gamma is applied —
@@ -179,14 +137,13 @@ with the full-resolution linear image in a SubIFD.
 
 #### What it is forced to claim
 
-DNG makes the colour spec **mandatory**, and a reader will act on it. That is a
-stronger claim than the TIFF's ICC profile, whose fabricated part (the primaries)
-is inert while its exact part (the identity curve) is the whole point. Here the
-fabricated part moves pixels.
+DNG makes the colour spec **mandatory**, and a reader will act on it — this is
+the one part of the file that is fabricated *and* moves pixels.
 
-There is no honest answer available, for the reason given above — a merge is not
-colorimetric. So the DNG makes the **same** assumption the ICC profile does, so
-that the two formats cannot contradict each other:
+There is no honest answer available: a merge is not colorimetric, because each
+channel came from a separate exposure under its own narrow-band light, at
+whatever relative brightness those lights happened to have. No set of primaries
+describes that. So the file states a convention, and states it consistently:
 
 * the merge is treated as linear RGB on sRGB/Rec.709 primaries, written as
   `ColorMatrix1` under a D65 calibration illuminant — the white those primaries
@@ -202,8 +159,8 @@ that the two formats cannot contradict each other:
   camera's profile;
 * `ProfileToneCurve` is the identity, (0, 0) -> (1, 1). A profile that states no
   curve is rendered through the converter's own default S-curve — the remaining
-  way a DNG can open lighter than the TIFF of the same pixels — so it is there
-  to leave nothing for a default to fill;
+  way a merge can open lighter than its own numbers — so it is there to leave
+  nothing for a default to fill;
 * `DefaultBlackRender` is `None`. Left at `Auto`, a converter subtracts its own
   estimated black point — but this file's black is known exactly and stated as
   `BlackLevel = 0`, and a negative's darkest values sit well above it on mask
@@ -214,8 +171,7 @@ Those last two decline both of the default renderings a converter applies before
 you have touched anything. They are as far as a file can go: a converter's own
 process-version baseline is still its own.
 
-Treat the primaries as a placeholder exactly as with the TIFF, and grade from
-there.
+Treat the primaries as a placeholder and grade from there.
 
 #### What it carries from the camera
 
@@ -262,6 +218,8 @@ so a sideways-mounted body's frames come up the right way.
 All of this is read in-process — a TIFF-structured raw (`.arw .nef .cr2 .dng
 .orf .pef .srw .rw2 .3fr`), Canon's `CMT` boxes in a `.cr3`, or the `APP1`
 segment of the JPEG inside a `.raf` — with no exiftool and no extra dependency.
+It is also the reason a merged file is still worth having after the RAWs are
+gone, rather than an anonymous grid of pixels.
 If a source's metadata cannot be read, the merge is still written and verified
 and the run says so:
 
@@ -275,19 +233,17 @@ though: after it, the warning is about data that no longer exists anywhere.
 
 #### Why it is uncompressed
 
-DNG's lossless choices are uncompressed and lossless JPEG. ZIP/deflate — what the
-TIFF path uses — is not among them for 16-bit integer data; libraw rejects such a
-file outright. So a DNG is exactly `width × height × 6` bytes, 145 MB for a
-6024×4024 frame, where the equivalent TIFF is however far deflate gets on your
-particular images. Expect the DNG to be the larger of the two, often by a good
-margin. If that matters more to you than the raw pipeline does, `--format tiff`
-is the default for a reason. (Adobe DNG Converter will losslessly recompress one
-if you want both.)
+DNG's lossless choices are uncompressed and lossless JPEG. ZIP/deflate is not
+among them for 16-bit integer data; libraw rejects such a file outright. So the
+file is exactly `width × height × 6` bytes — 145 MB for a 6024×4024 frame,
+whatever the image. If that matters, Adobe DNG Converter will losslessly
+recompress one, typically to around half.
 
-Because `.dng` is itself a supported RAW extension, a merged DNG left beside its
-sources would otherwise be picked up as an *input* on the next run. It isn't:
-folder scans skip files carrying the merge marker, so running the same command
-twice over a folder is safe — the second run simply finds nothing to do.
+Because `.dng` is itself a supported RAW extension, the tool writes its own
+input format, and a merged file left beside its sources would otherwise be
+picked up as an *input* on the next run. It isn't: folder scans skip files
+carrying the merge marker, so running the same command twice over a folder is
+safe — the second run simply finds nothing to do.
 
 ## Deleting the originals
 
@@ -306,16 +262,16 @@ twice over a folder is safe — the second run simply finds nothing to do.
 * There is no confirmation prompt: passing the flag is the confirmation. Use
   `--dry-run` first to see exactly which files a run would delete.
 
-With `--format dng` the capture metadata survives the deletion (above); with
-`--format tiff` it does not, because a linear TIFF carries nothing but its
-pixels and its linearity. If you are deleting the originals, that is a reason to
-prefer the DNG.
+The capture metadata survives the deletion (above), so what is left is still a
+photograph with a date, a body and a lens on it — but read any `WARNING` lines
+first, since they are about metadata that will not exist anywhere else
+afterwards.
 
 ## From digiKam, on macOS
 
 [`contrib/macos/`](contrib/macos/) has an AppleScript droplet and a build script
 that turn this tool into an app you can reach from digiKam's (or Finder's) **Open
-With** menu: select the frames of a shoot, open them with it, pick TIFF or DNG.
+With** menu: select the frames of a shoot and open them with it.
 
 ```bash
 cd contrib/macos && ./build-app.sh      # -> ~/Applications/Trichrome Merge.app
@@ -335,9 +291,9 @@ summary = run_jobs(jobs, demosaic=True, delete_originals=False)
 print(len(summary.written), "merged;", len(summary.failures), "failed")
 ```
 
-`plan_jobs(..., fmt="dng")` is the library spelling of `--format dng`. The format
-is settled at plan time because it decides the extension, and so the output path;
-each `Job` carries it, and `run_jobs` writes what the job says.
+`plan_jobs` settles the output path — including the `.dng` extension and any
+numeric suffix needed to avoid an existing file — and `run_jobs` writes what the
+plan says.
 
 `write_linear_dng(path, merged, source=first_raw)` is what carries the camera
 metadata over, and returns `None` or a one-line warning; `run_jobs` does this
@@ -345,10 +301,8 @@ for you and puts the warning on the `JobResult`. `read_source_metadata(path)`
 reads a RAW's EXIF on its own.
 
 `merge_raw_channels(sources, demosaic=True, light_order="RGB")` returns
-`(uint16 HxWx3 array, (H, W))` if you just want the pixels. `run_jobs(...,
-icc=False)` is the library spelling of `--no-icc`, `linear_rgb_profile()` hands
-you the ICC profile bytes on their own, and `read_linear_dng(path)` reads the
-linear image back out of a written DNG.
+`(uint16 HxWx3 array, (H, W))` if you just want the pixels, and
+`read_linear_dng(path)` reads the linear image back out of a written file.
 
 ## Tests
 
@@ -359,16 +313,14 @@ pytest
 
 The decode is monkeypatched, so the suite needs no RAW files and runs in about a
 second. It covers the pure merge maths (CFA phase slicing, black/white-level
-normalisation, light order), the ICC profile field by field, the DNG's structure
-and colour metadata, the camera metadata it carries over (read back with
-tifffile's own EXIF parser, out of hand-built TIFF, CR3 and RAF sources in both
-byte orders), and every deletion-safety rule above. The end-to-end tests
-build synthetic RAWs, run the real decode over them, and hand the written DNG
-back to libraw to confirm it decodes to the merge that went in. Where Pillow is installed — it is in the `dev`
-extra — the profile is also handed to littleCMS to confirm an independent colour
-engine accepts it and applies the linear curve. Where exiftool is on `PATH`,
-one test also hands it a merged DNG to confirm an outside reader parses the
-metadata as an ordinary camera file's.
+normalisation, light order), the colorimetry behind the two matrices, the DNG's
+structure and the colour spec it is forced to state, the camera metadata it
+carries over (read back with tifffile's own EXIF parser, out of hand-built TIFF,
+CR3 and RAF sources in both byte orders), and every deletion-safety rule above.
+The end-to-end tests build synthetic RAWs, run the real decode over them, and
+hand the written file back to libraw to confirm it decodes to the merge that
+went in. Where exiftool is on `PATH`, one test also hands it a merged DNG to
+confirm an outside reader parses the metadata as an ordinary camera file's.
 
 ## Contributing
 

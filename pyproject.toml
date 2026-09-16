@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trichrome"
 version = "0.4.0"
-description = "Merge red/green/blue-light RAW triplets into 16-bit linear TIFFs or DNGs"
+description = "Merge red/green/blue-light RAW triplets into 16-bit linear DNGs"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -14,14 +14,10 @@ dependencies = [
     "numpy>=1.24",
     "rawpy",
     "tifffile",
-    "imagecodecs",      # deflate/predictor codec for tifffile
 ]
 
 [project.optional-dependencies]
-# Pillow is here only so the suite can hand the ICC profile trichrome builds
-# to an independent CMM (littleCMS, via PIL.ImageCms) and confirm a real
-# implementation accepts it. Nothing in the package imports it.
-dev = ["pytest>=7", "Pillow"]
+dev = ["pytest>=7"]
 
 [project.scripts]
 trichrome = "trichrome.cli:main"

@@ -26,8 +26,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # rawpy and imagecodecs are real dependencies even here: the suite
-      # monkeypatches the decode, but importing the package still imports them.
+      # rawpy is a real dependency even here: the suite monkeypatches the
+      # decode, but importing the package still imports it.
       - run: pip install -e ".[dev]"
 
       - run: pytest -q

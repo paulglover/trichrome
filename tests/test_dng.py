@@ -1,7 +1,7 @@
 """
 Tests for the linear DNG output: the file's structure, the colour metadata it is
-forced to carry, the verification that guards deletion, and the format plumbing
-through plan_jobs/run_jobs and the CLI.
+forced to carry, the verification that guards deletion, and the plumbing through
+plan_jobs/run_jobs and the CLI.
 
 The DNG's whole reason for existing is that a converter opens it through the RAW
 pipeline, so the claims that matter here are structural — LinearRaw in a SubIFD,
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from trichrome import bake, cli, dng, icc, tiff
+from trichrome import bake, cli, colour, dng
 
 from test_bake import FakeDecoder, raws
 
@@ -66,14 +66,6 @@ def test_the_image_survives_the_round_trip_exactly(tmp_path):
     img = sample()
     dng.write_linear_dng(out, img)
     assert np.array_equal(dng.read_linear_dng(out), img)
-
-
-def test_a_dng_and_a_tiff_of_the_same_merge_hold_identical_pixels(tmp_path):
-    img = sample()
-    d, t = str(tmp_path / "m.dng"), str(tmp_path / "m.tif")
-    dng.write_linear_dng(d, img)
-    tiff.write_linear_tiff(t, img)
-    assert np.array_equal(dng.read_linear_dng(d), tifffile.imread(t))
 
 
 def test_the_full_image_is_linear_raw_in_a_subifd_not_ifd0(tmp_path):
@@ -138,7 +130,7 @@ def test_it_names_itself_rather_than_impersonating_a_camera(tmp_path):
     assert ifd0["UniqueCameraModel"] == dng.UNIQUE_CAMERA_MODEL
     assert bytes(ifd0["DNGVersion"]) == bytes((1, 4, 0, 0))
     assert bytes(ifd0["DNGBackwardVersion"]) == bytes((1, 2, 0, 0))
-    assert tiff.FREECCR_MERGE_TIFF_MARKER in ifd0["Software"]
+    assert dng.FREECCR_MERGE_MARKER in ifd0["Software"]
 
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +142,7 @@ def test_the_forward_matrix_maps_the_merge_neutral_onto_d50(tmp_path):
     exactly on the profile connection space's white."""
     forward, _color = dng.color_matrices()
     white = np.array(forward) @ np.array([1.0, 1.0, 1.0])
-    x, y = icc.D50_XY
+    x, y = colour.D50_XY
     expected = np.array([x / y, 1.0, (1.0 - x - y) / y])
     assert np.allclose(white, expected, atol=1e-6)
 
@@ -161,9 +153,9 @@ def test_the_colour_matrix_maps_the_calibration_illuminant_onto_the_neutral():
     calibration illuminant, so that illuminant's white has to come back out of it
     as (1, 1, 1). When it does not, a converter deriving its own daylight white
     balance from the matrix scales the channels apart — the merge arrives lighter
-    with red and green clipped, and disagrees with the TIFF of the same data."""
+    than its own numbers, with red and green clipped."""
     _forward, color = dng.color_matrices()
-    x, y = icc.D65_XY
+    x, y = colour.D65_XY
     white = np.array(color) @ np.array([x / y, 1.0, (1.0 - x - y) / y])
     assert np.allclose(white, np.ones(3), atol=1e-6)
 
@@ -171,27 +163,27 @@ def test_the_colour_matrix_maps_the_calibration_illuminant_onto_the_neutral():
 def test_the_two_matrices_are_not_an_inverse_pair():
     """They are stated against different whites — ColorMatrix1 under D65,
     ForwardMatrix1 onto D50 — so their product is the Bradford adaptation
-    between the two, exactly the transform the ICC profile's chad tag holds."""
+    between the two, and nothing else."""
     forward, color = dng.color_matrices()
-    chad = np.array(icc.bradford_adaptation(icc.D65_XY, icc.D50_XY))
+    chad = np.array(colour.bradford_adaptation(colour.D65_XY, colour.D50_XY))
     assert np.allclose(np.array(forward) @ np.array(color), chad, atol=1e-9)
 
 
-def test_the_matrices_state_the_same_primaries_the_icc_profile_does():
-    """The TIFF and the DNG must not disagree about what the merge is. icc.py
-    assumes sRGB primaries; the forward matrix here has to be that same
-    RGB->XYZ(D50) transform, or the two formats would grade differently."""
+def test_the_matrices_state_the_primaries_the_convention_names():
+    """colour.py names sRGB's primaries as the convention this tool assumes, so
+    the forward matrix has to be exactly that RGB->XYZ(D50) transform — the file
+    must not quietly state something else."""
     forward, _color = dng.color_matrices()
-    chad = np.array(icc.bradford_adaptation(icc.D65_XY, icc.D50_XY))
-    srgb = np.array(icc.rgb_to_xyz_matrix(icc.SRGB_PRIMARIES_XY, icc.D65_XY))
+    chad = np.array(colour.bradford_adaptation(colour.D65_XY, colour.D50_XY))
+    srgb = np.array(colour.rgb_to_xyz_matrix(colour.SRGB_PRIMARIES_XY, colour.D65_XY))
     assert np.allclose(np.array(forward), chad @ srgb)
 
 
 def test_the_profile_carries_an_identity_tone_curve(tmp_path):
     """Colour is not the only default a converter supplies. A profile with no
     tone curve of its own is rendered through the converter's default S-curve,
-    which is the remaining way a DNG can open lighter than the TIFF of the same
-    pixels. The identity fills the slot so there is no default to fall back to.
+    the remaining way a merge can open lighter than its own numbers. The identity
+    fills the slot so there is no default to fall back to.
 
     Checked as it is ENCODED: the spec wants 32-bit floats (type 11) in (in, out)
     pairs, and a reader that finds a rational or a short here has no curve."""
@@ -282,9 +274,10 @@ def test_verify_rejects_a_size_that_is_not_the_one_the_merge_produced(tmp_path):
         dng.verify_linear_dng(out, expect_shape=(12, 40))
 
 
-def test_verify_rejects_a_plain_tiff(tmp_path):
+def test_verify_rejects_a_plain_tiff_renamed_dng(tmp_path):
+    """A .dng that no DNG writer produced: the extension is not the check."""
     out = str(tmp_path / "not.dng")
-    tiff.write_linear_tiff(out, sample())
+    tifffile.imwrite(out, sample(), photometric="rgb")
     with pytest.raises(IOError, match="no DNGVersion"):
         dng.verify_linear_dng(out)
 
@@ -316,8 +309,7 @@ def test_a_written_dng_is_recognised_as_this_tools_own_output(tmp_path):
     out = str(tmp_path / "m.dng")
     dng.write_linear_dng(out, sample())
     assert dng.is_merge_dng(out)
-    assert tiff.carries_merge_marker(out)
-    assert not tiff.is_merge_tiff(out)          # marker yes, .tif no
+    assert dng.carries_merge_marker(out)
 
 
 def test_an_unmarked_dng_and_a_non_dng_are_not(tmp_path):
@@ -325,16 +317,19 @@ def test_an_unmarked_dng_and_a_non_dng_are_not(tmp_path):
     tifffile.imwrite(str(plain), np.zeros((8, 8), np.uint16), software="a camera")
     assert not dng.is_merge_dng(str(plain))
     assert not dng.is_merge_dng(str(tmp_path / "missing.dng"))
-    marked_tif = str(tmp_path / "m.tif")
-    tiff.write_linear_tiff(marked_tif, sample())
-    assert not dng.is_merge_dng(marked_tif)     # marker yes, .dng no
+    # The marker alone is not enough: the extension is checked too, so a marked
+    # file under another name is not mistaken for this tool's output.
+    marked = str(tmp_path / "m.tif")
+    dng.write_linear_dng(marked, sample())
+    assert dng.carries_merge_marker(marked)
+    assert not dng.is_merge_dng(marked)
 
 
 def test_a_merged_dng_left_beside_its_sources_is_not_picked_up_as_an_input(
         tmp_path):
-    """.dng is a supported RAW extension, so without the exclusion a second
-    `--format dng` run over the same folder would try to merge its own output —
-    and, with --delete-originals, would then be deleting merges."""
+    """.dng is a supported RAW extension, so without the exclusion a second run
+    over the same folder would try to merge its own output — and, with
+    --delete-originals, would then be deleting merges."""
     sources = raws(tmp_path, 3, ext=".dng")
     dng.write_linear_dng(str(tmp_path / "img001_RGB.dng"), sample())
     found = bake.collect_raw_files([str(tmp_path)])
@@ -358,37 +353,23 @@ def test_an_explicitly_named_merge_output_is_still_taken_as_given(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Format plumbing: plan_jobs, run_jobs, the CLI
+# Plumbing: plan_jobs, run_jobs, the CLI
 # --------------------------------------------------------------------------- #
-def test_planning_for_dng_names_the_outputs_dng(tmp_path):
-    jobs = bake.plan_jobs(raws(tmp_path, 6), fmt="dng")
+def test_planning_names_every_output_dng(tmp_path):
+    jobs = bake.plan_jobs(raws(tmp_path, 6))
     assert [os.path.basename(j.output) for j in jobs] == \
         ["img001_RGB.dng", "img004_RGB.dng"]
-    assert all(j.fmt == "dng" for j in jobs)
 
 
-def test_planning_never_overwrites_an_existing_dng_either(tmp_path):
+def test_planning_never_overwrites_an_existing_dng(tmp_path):
     files = raws(tmp_path, 3)
     (tmp_path / "img001_RGB.dng").write_bytes(b"already here")
-    jobs = bake.plan_jobs(files, fmt="dng")
+    jobs = bake.plan_jobs(files)
     assert os.path.basename(jobs[0].output) == "img001_RGB_2.dng"
 
 
-def test_a_tiff_and_a_dng_plan_do_not_collide_with_each_other(tmp_path):
-    files = raws(tmp_path, 3)
-    tif = bake.plan_jobs(files)[0]
-    dng_job = bake.plan_jobs(files, fmt="dng")[0]
-    assert tif.output.endswith("img001_RGB.tif")
-    assert dng_job.output.endswith("img001_RGB.dng")
-
-
-def test_an_unknown_format_is_rejected_while_planning(tmp_path):
-    with pytest.raises(ValueError, match="unknown output format"):
-        bake.plan_jobs(raws(tmp_path, 3), fmt="jpeg")
-
-
-def test_running_a_dng_plan_writes_verified_dngs(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3), fmt="dng")
+def test_running_a_plan_writes_verified_dngs(tmp_path, fake_decode):
+    jobs = bake.plan_jobs(raws(tmp_path, 3))
     summary = bake.run_jobs(jobs)
     assert len(summary.written) == 1 and not summary.failures
     assert summary.written[0].size == (6, 8)
@@ -396,72 +377,39 @@ def test_running_a_dng_plan_writes_verified_dngs(tmp_path, fake_decode):
                           [1000, 2000, 3000])
 
 
-def test_the_job_decides_the_format_so_a_plan_cannot_be_run_as_the_wrong_one(
-        tmp_path, fake_decode):
-    """The extension is chosen at plan time; if the writer were chosen separately
-    at run time the two could disagree and put TIFF bytes in a .dng."""
-    jobs = bake.plan_jobs(raws(tmp_path, 3), fmt="dng")
-    bake.run_jobs(jobs, icc=False)              # a TIFF-only flag
-    dng.verify_linear_dng(jobs[0].output, expect_shape=(6, 8))
-
-
-def test_deleting_originals_works_the_same_on_the_dng_path(tmp_path,
-                                                           fake_decode):
+def test_deleting_originals_leaves_a_verified_dng_behind(tmp_path, fake_decode):
     files = raws(tmp_path, 3)
-    jobs = bake.plan_jobs(files, fmt="dng")
+    jobs = bake.plan_jobs(files)
     summary = bake.run_jobs(jobs, delete_originals=True)
     assert len(summary.deleted) == 3
     assert not any(os.path.exists(f) for f in files)
     dng.verify_linear_dng(jobs[0].output)
 
 
-def test_a_failed_dng_job_leaves_no_partial_file_and_no_deletions(tmp_path,
-                                                                  fake_decode):
+def test_a_failed_job_leaves_no_partial_file_and_no_deletions(tmp_path,
+                                                              fake_decode):
     files = raws(tmp_path, 3)
     fake_decode.boom = "img002"
-    jobs = bake.plan_jobs(files, fmt="dng")
+    jobs = bake.plan_jobs(files)
     summary = bake.run_jobs(jobs, delete_originals=True)
     assert len(summary.failures) == 1 and not summary.deleted
     assert not os.path.exists(jobs[0].output)
     assert all(os.path.exists(f) for f in files)
 
 
-def test_cli_format_dng_writes_a_dng_and_says_so(tmp_path, capsys, fake_decode):
+def test_cli_writes_a_dng_and_says_so(tmp_path, capsys, fake_decode):
     raws(tmp_path, 3)
-    assert cli.main(["merge", str(tmp_path), "--format", "dng"]) == 0
+    assert cli.main(["merge", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "linear DNG" in out
     assert dng.is_merge_dng(str(tmp_path / "img001_RGB.dng"))
 
 
-def test_cli_defaults_to_tiff(tmp_path, fake_decode):
+def test_cli_list_and_dry_run_name_the_dng_they_would_write(tmp_path, capsys):
     raws(tmp_path, 3)
-    assert cli.main(["merge", str(tmp_path)]) == 0
-    assert os.path.exists(str(tmp_path / "img001_RGB.tif"))
-    assert not os.path.exists(str(tmp_path / "img001_RGB.dng"))
-
-
-def test_cli_no_icc_is_inert_on_the_dng_path(tmp_path, capsys, fake_decode):
-    """DNG carries no ICC profile at all, so the flag has nothing to switch off
-    and the header must not claim otherwise."""
-    raws(tmp_path, 3)
-    assert cli.main(["merge", str(tmp_path), "--format", "dng",
-                     "--no-icc"]) == 0
-    assert "no ICC" not in capsys.readouterr().out
-    dng.verify_linear_dng(str(tmp_path / "img001_RGB.dng"))
-
-
-def test_cli_list_and_dry_run_report_the_chosen_format(tmp_path, capsys):
-    raws(tmp_path, 3)
-    assert cli.main(["list", str(tmp_path), "--format", "dng"]) == 0
+    assert cli.main(["list", str(tmp_path)]) == 0
     assert "img001_RGB.dng" in capsys.readouterr().out
-    assert cli.main(["merge", str(tmp_path), "--format", "dng", "-n"]) == 0
+    assert cli.main(["merge", str(tmp_path), "-n"]) == 0
     out = capsys.readouterr().out
     assert "1 DNG(s) would be created" in out
     assert not os.path.exists(str(tmp_path / "img001_RGB.dng"))
-
-
-def test_cli_rejects_an_unknown_format(tmp_path, capsys):
-    raws(tmp_path, 3)
-    with pytest.raises(SystemExit):
-        cli.main(["merge", str(tmp_path), "--format", "jpeg"])
