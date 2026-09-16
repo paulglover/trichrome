@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from trichrome import bake, cli, dng, exif, icc, merge, tiff
+from trichrome import bake, cli, dng, exif, merge
 
 rawpy = pytest.importorskip("rawpy")
 
@@ -138,46 +138,32 @@ def test_frames_with_different_pedestals_do_not_tint_the_merge(tmp_path):
         assert abs(int(merged[..., ch].mean()) - want) <= 1, f"channel {ch}"
 
 
-def test_full_cli_run_writes_a_readable_tiff_and_deletes_on_request(triplet,
-                                                                    capsys):
+def test_full_cli_run_writes_a_readable_dng_and_deletes_on_request(triplet,
+                                                                  capsys):
     shoot, paths, expected = triplet
     assert cli.main(["merge", str(shoot), "--delete-originals"]) == 0
 
-    out = str(shoot / "frame1_RGB.tif")
+    out = str(shoot / "frame1_RGB.dng")
     assert os.path.exists(out)
-    data = tifffile.imread(out)
+    data = dng.read_linear_dng(out)
     assert data.shape == (64, 96, 3) and data.dtype == np.uint16
     for ch, want in enumerate(expected):
         assert abs(int(data[8:-8, 8:-8, ch].mean()) - want) <= 1
     assert not any(os.path.exists(p) for p in paths)     # RAWs gone
-    assert tiff.embedded_icc_profile(out) == icc.linear_rgb_profile()
-
-
-def test_cli_no_icc_writes_the_same_pixels_without_the_profile(tmp_path):
-    shoot = tmp_path / "shoot"
-    shoot.mkdir()
-    write_triplet(shoot)
-    assert cli.main(["merge", str(shoot), "--no-icc"]) == 0
-    untagged = str(shoot / "frame1_RGB.tif")
-    assert tiff.embedded_icc_profile(untagged) is None
-
-    assert cli.main(["merge", str(shoot)]) == 0
-    tagged = str(shoot / "frame1_RGB_2.tif")            # never overwrites
-    assert tiff.embedded_icc_profile(tagged) == icc.linear_rgb_profile()
-    assert np.array_equal(tifffile.imread(untagged), tifffile.imread(tagged))
+    assert dng.is_merge_dng(out)
 
 
 # --------------------------------------------------------------------------- #
-# The linear DNG, opened the way the format exists to be opened
+# The file, opened the way it exists to be opened
 # --------------------------------------------------------------------------- #
 def test_a_written_dng_opens_in_libraw_as_raw_with_the_merged_values(triplet):
-    """The whole claim of --format dng: a real RAW decoder ingests the file
+    """The whole claim of the format: a real RAW decoder ingests the file
     through its RAW pipeline. Decoded with the pipeline switched to identity
     (camera-native colour, gamma 1, unity white balance, no auto-brighten) it
     must hand back exactly the merge that went in — proof that the file says
     what it holds, and that nothing in the container altered it."""
     shoot, _paths, expected = triplet
-    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 0
+    assert cli.main(["merge", str(shoot)]) == 0
     out = str(shoot / "frame1_RGB.dng")
 
     with rawpy.imread(out) as decoded:
@@ -200,10 +186,10 @@ def test_the_dng_survives_a_decoder_that_derives_its_own_white_balance(triplet):
     a file whose ColorMatrix1 is stated under the wrong illuminant sends those
     two ways to different answers. Stating it under D50 while AsShotNeutral says
     (1, 1, 1) made the derived multipliers (1.65, 1.34, 1.00): the merge arrived
-    two thirds of a stop hot in red, clipping red and green, while the TIFF of
-    the same pixels was untouched. Both routes must agree, and agree on unity."""
+    two thirds of a stop hot in red, with red and green clipped. Both routes must
+    agree, and agree on unity."""
     shoot, _paths, expected = triplet
-    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 0
+    assert cli.main(["merge", str(shoot)]) == 0
     out = str(shoot / "frame1_RGB.dng")
 
     with rawpy.imread(out) as decoded:
@@ -225,27 +211,17 @@ def test_the_dng_survives_a_decoder_that_derives_its_own_white_balance(triplet):
         assert abs(got - want) <= want * 1e-3, f"channel {ch}: {got} vs {want}"
 
 
-def test_the_dng_and_the_tiff_of_one_shoot_hold_the_same_pixels(triplet):
-    """Two containers, one merge: choosing a format must never change the data,
-    only how a converter treats it."""
-    shoot, _paths, _expected = triplet
-    assert cli.main(["merge", str(shoot)]) == 0
-    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 0
-    assert np.array_equal(tifffile.imread(str(shoot / "frame1_RGB.tif")),
-                          dng.read_linear_dng(str(shoot / "frame1_RGB.dng")))
-
-
 def test_a_dng_run_over_a_folder_twice_does_not_eat_its_own_output(triplet):
     """The .dng-is-also-a-RAW-extension hazard, end to end and with the
     destructive flag on: the second run must find no inputs at all, rather than
-    merging the first run's output and deleting it."""
+    merging the first run's output and deleting it. Sharper now that every
+    output is a DNG: the tool writes its own input format every time."""
     shoot, paths, _expected = triplet
-    assert cli.main(["merge", str(shoot), "--format", "dng",
-                     "--delete-originals"]) == 0
+    assert cli.main(["merge", str(shoot), "--delete-originals"]) == 0
     merged = str(shoot / "frame1_RGB.dng")
     assert os.path.exists(merged) and not any(os.path.exists(p) for p in paths)
 
-    assert cli.main(["merge", str(shoot), "--format", "dng"]) == 2
+    assert cli.main(["merge", str(shoot)]) == 2
     assert os.path.exists(merged)
     assert not os.path.exists(str(shoot / "frame1_RGB_RGB.dng"))
 
@@ -266,7 +242,7 @@ def test_a_merged_dng_carries_its_first_frame_s_camera_metadata(triplet, tmp_pat
             fx.write_tiff_source(tmp_path / "other.arw",
                                  ifd0=[(271, fx._ascii("NOT THIS BODY"))])))
 
-    jobs = bake.plan_jobs(paths, out_dir=str(tmp_path / "out"), fmt="dng")
+    jobs = bake.plan_jobs(paths, out_dir=str(tmp_path / "out"))
     summary = bake.run_jobs(jobs)
     assert [r.warning for r in summary.written] == [None]
     out = summary.written[0].job.output

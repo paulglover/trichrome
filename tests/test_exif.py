@@ -266,7 +266,7 @@ def test_a_failed_copy_is_reported_by_the_job_and_printed_by_the_cli(
     # test_bake's raws() are placeholders with no metadata in them at all, which
     # is exactly the case that must warn rather than fail.
     raws(tmp_path, 3)
-    assert cli.main(["merge", str(tmp_path), "--format", "dng"]) == 0
+    assert cli.main(["merge", str(tmp_path)]) == 0
     out, err = capsys.readouterr()
     assert "1 merged, 0 failed" in out
     assert "WARNING img001_RGB.dng" in err and "img001.arw" in err
@@ -275,24 +275,12 @@ def test_a_failed_copy_is_reported_by_the_job_and_printed_by_the_cli(
 def test_a_copied_job_warns_about_nothing(tmp_path, fake_decode, capsys):
     for i in (1, 2, 3):
         fx.write_tiff_source(tmp_path / f"img{i:03d}.arw")
-    assert cli.main(["merge", str(tmp_path), "--format", "dng"]) == 0
+    assert cli.main(["merge", str(tmp_path)]) == 0
     assert "WARNING" not in capsys.readouterr().err
     results = bake.run_jobs(bake.plan_jobs(
         [str(tmp_path / f"img{i:03d}.arw") for i in (1, 2, 3)],
-        out_dir=str(tmp_path / "again"), fmt="dng"))
+        out_dir=str(tmp_path / "again")))
     assert [r.warning for r in results.written] == [None]
-
-
-def test_a_tiff_takes_no_metadata_from_its_sources(tmp_path, fake_decode):
-    for i in (1, 2, 3):
-        fx.write_tiff_source(tmp_path / f"img{i:03d}.arw")
-    summary = bake.run_jobs(bake.plan_jobs(
-        [str(tmp_path / f"img{i:03d}.arw") for i in (1, 2, 3)], fmt="tiff"))
-    out = summary.written[0].job.output
-    assert summary.written[0].warning is None
-    with tifffile.TiffFile(out) as tf:
-        assert 34665 not in {t.code for t in tf.pages[0].tags.values()}
-        assert 271 not in {t.code for t in tf.pages[0].tags.values()}
 
 
 # --------------------------------------------------------------------------- #

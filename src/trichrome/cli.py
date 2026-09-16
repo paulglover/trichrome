@@ -1,8 +1,7 @@
 """
 Command-line interface.
 
-    trichrome merge ./shoot                     # write TIFFs, keep the RAWs
-    trichrome merge ./shoot --format dng        # linear DNGs instead
+    trichrome merge ./shoot                     # write DNGs, keep the RAWs
     trichrome merge ./shoot --out ./merged
     trichrome merge ./shoot --delete-originals  # destructive; no prompt
     trichrome merge ./shoot --dry-run           # show the plan only
@@ -27,8 +26,7 @@ def _plan(args) -> List[bake_mod.Job]:
     if not paths:
         raise ValueError("No RAW files found. Supported: "
                          + ", ".join(sorted(merge_mod.RAW_EXTENSIONS)))
-    return bake_mod.plan_jobs(paths, out_dir=args.out, suffix=args.suffix,
-                              fmt=args.format)
+    return bake_mod.plan_jobs(paths, out_dir=args.out, suffix=args.suffix)
 
 
 def cmd_list(args) -> int:
@@ -43,13 +41,8 @@ def cmd_merge(args) -> int:
     jobs = _plan(args)
     mode = "demosaic (full resolution)" if args.demosaic else \
            "single photosite (half resolution)"
-    fmt = bake_mod.normalise_format(args.format)
-    is_dng = fmt == bake_mod.FORMAT_DNG
-    label = "linear DNG" if is_dng else "linear TIFF"
     print(f"{len(jobs)} triplet(s) · light order {args.order.upper()} · {mode}"
-          f" · {label}"
-          # --no-icc has nothing to switch off on the DNG path.
-          + ("" if args.icc or is_dng else " · untagged (no ICC)"))
+          f" · linear DNG")
 
     def progress(i, total, job):
         print(f"[{i + 1}/{total}] {_fmt_triplet(job).strip()}  ->  "
@@ -58,11 +51,11 @@ def cmd_merge(args) -> int:
     summary = bake_mod.run_jobs(
         jobs, demosaic=args.demosaic, light_order=args.order,
         delete_originals=args.delete_originals, dry_run=args.dry_run,
-        icc=args.icc, progress_cb=progress)
+        progress_cb=progress)
 
     if args.dry_run:
-        print(f"\nDry run — nothing written. {len(jobs)} "
-              f"{'DNG' if is_dng else 'TIFF'}(s) would be created"
+        print(f"\nDry run — nothing written. {len(jobs)} DNG(s) would be "
+              "created"
               + (f", {len(jobs) * 3} RAW(s) deleted."
                  if args.delete_originals else "."))
         return 0
@@ -95,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="trichrome",
         description="Merge red/green/blue-light RAW triplets into 16-bit "
-                    "linear TIFFs or DNGs.",
+                    "linear DNGs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__)
     p.add_argument("--version", action="version",
@@ -110,23 +103,16 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("-o", "--out", metavar="DIR",
                         help="write the merged files here (default: beside each "
                              "triplet's first frame)")
-        sp.add_argument("--format", choices=bake_mod.OUTPUT_FORMATS,
-                        default=bake_mod.DEFAULT_FORMAT,
-                        help="tiff: compact, archival, opens as a rendered "
-                             "image (default). dng: uncompressed and larger, "
-                             "but opens through a converter's RAW pipeline "
-                             "(raw white balance, camera profile)")
         sp.add_argument("--suffix", default=bake_mod.DEFAULT_NAME_SUFFIX,
                         help="appended to the first frame's name, before the "
-                             "extension "
+                             ".dng extension "
                              f"(default: {bake_mod.DEFAULT_NAME_SUFFIX})")
         sp.add_argument("--order", default=merge_mod.DEFAULT_LIGHT_ORDER,
                         metavar="RGB",
                         help="which light each frame of a triplet was shot "
                              "under, in filename order (default: RGB)")
 
-    sp = sub.add_parser("merge",
-                        help="merge triplets into linear TIFFs or DNGs")
+    sp = sub.add_parser("merge", help="merge triplets into linear DNGs")
     common(sp)
     g = sp.add_mutually_exclusive_group()
     g.add_argument("--demosaic", dest="demosaic", action="store_true",
@@ -139,11 +125,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--delete-originals", action="store_true",
                     help="PERMANENTLY delete each triplet's source RAWs after "
                          "its merged file is written and verified")
-    sp.add_argument("--no-icc", dest="icc", action="store_false",
-                    help="write a strictly untagged TIFF, with no linear ICC "
-                         "profile (pixels are the same either way; without it "
-                         "viewers assume sRGB and show the file dark). No "
-                         "effect on --format dng, which carries no ICC profile")
     sp.add_argument("-n", "--dry-run", action="store_true",
                     help="show what would happen; decode, write and delete "
                          "nothing")

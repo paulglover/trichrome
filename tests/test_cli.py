@@ -25,15 +25,15 @@ def test_list_shows_each_triplet_and_its_output(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "2 triplet(s)" in out
     assert "img001.arw + img002.arw + img003.arw" in out
-    assert "img001_RGB.tif" in out
+    assert "img001_RGB.dng" in out
 
 
-def test_merge_writes_tiffs_and_reports_their_size(tmp_path, capsys, fake_decode):
+def test_merge_writes_dngs_and_reports_their_size(tmp_path, capsys, fake_decode):
     raws(tmp_path, 3)
     assert cli.main(["merge", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "8x6, uint16" in out                    # WxH
-    assert os.path.exists(str(tmp_path / "img001_RGB.tif"))
+    assert os.path.exists(str(tmp_path / "img001_RGB.dng"))
 
 
 def test_photosite_flag_turns_demosaic_off(tmp_path, fake_decode):
@@ -52,7 +52,7 @@ def test_dry_run_reports_the_plan_without_writing(tmp_path, capsys, fake_decode)
     raws(tmp_path, 3)
     assert cli.main(["merge", str(tmp_path), "--dry-run"]) == 0
     assert "Dry run" in capsys.readouterr().out
-    assert not os.path.exists(str(tmp_path / "img001_RGB.tif"))
+    assert not os.path.exists(str(tmp_path / "img001_RGB.dng"))
     assert fake_decode.calls == []
 
 

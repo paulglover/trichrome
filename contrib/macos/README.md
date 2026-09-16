@@ -4,8 +4,8 @@ An AppleScript app that hands a selection of RAW frames to `trichrome merge`, so
 a merge can be started from digiKam's (or Finder's) **Open With** menu instead of
 a terminal.
 
-It is a thin wrapper on purpose. It finds the tool, asks which format you want,
-runs it, and shows you what it said. Every rule about what makes a valid batch —
+It is a thin wrapper on purpose. It finds the tool, runs it, and shows you what
+it said. Every rule about what makes a valid batch —
 three frames per shot, all supported RAW, all the same sensor — stays in
 trichrome, which already reports those in language meant for a person.
 
@@ -50,8 +50,6 @@ The properties at the top of `trichrome-merge.applescript`:
 | --- | --- | --- |
 | `trichromePath` | `""` | absolute path to the tool; empty means auto-detect |
 | `searchPaths` | Homebrew, `/usr/local`, MacPorts | where auto-detection looks first |
-| `askForFormat` | `true` | prompt for TIFF/DNG on every run |
-| `defaultFormat` | `"dng"` | used when `askForFormat` is off |
 | `deleteOriginals` | `false` | **destructive** — see below |
 | `revealResult` | `true` | offer a *Show in Finder* button on success |
 
