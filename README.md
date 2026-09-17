@@ -195,17 +195,38 @@ Picking one of the three frames is not a compromise: the same body and lens shot
 all three, seconds apart, at the same settings. It is one answer written three
 times.
 
-Four things are deliberately **not** carried:
+"The EXIF IFD" is not always one directory. Some bodies write a sparse one into
+the raw and the full one into the **preview JPEG** the raw carries — a Panasonic
+DC-G9's RW2 has no ISO in its own EXIF at all. So trichrome reads every EXIF in
+the file and unions them, the raw's own values winning wherever both state a
+tag.
 
-* **The maker note.** Most vendors store its internal offsets relative to the
-  start of the file it was written in, so the block only means anything where it
-  was written. Everything standardised — including `LensModel` and
-  `LensSpecification` on any body of the last fifteen years — is in the EXIF IFD
-  proper and survives.
+**The lens** gets special handling, because some bodies record it only in the
+vendor's maker note — that same DC-G9 has no `LensModel` anywhere else. For
+Panasonic, Canon and Nikon, trichrome reads the lens out of the maker note and
+restates it in the standard tags every converter reads: `LensModel` and
+`LensSerialNumber` (Panasonic), `LensModel` (Canon, including a `.cr3`'s `CMT3`
+box), `LensSpecification` and so `LensInfo` (Nikon, which records focal and
+aperture range rather than a name). A lens tag the EXIF already states always
+wins, and placeholders — an empty name, a serial of zeros, an unknown lens
+recorded as f/0 — are refused rather than written. Other vendors keep whatever
+lens tags their EXIF carries, which on most bodies of the last decade is all of
+them.
+
+A few things are deliberately **not** carried:
+
+* **The maker note itself.** Its internal offsets are measured from a base that
+  differs by vendor, so the block only means anything where it was written;
+  moved into another file it reads as nonsense. The lens is rescued from it
+  (above) and the rest stays behind.
 * **XMP.** It records *edits* — crop, white balance, develop settings keyed to
   the source's raw pipeline — which describe a different image than the merge.
 * **`PixelXDimension` / `PixelYDimension`**, which are restated for the merged
   image rather than copied; a `--photosite` merge is half the source's size.
+* **`ColorSpace`**, restated as `Uncalibrated`. The source's sRGB is true of its
+  preview JPEG and false of linear camera-native data.
+* **`ComponentsConfiguration` and `CompressedBitsPerPixel`**, which EXIF defines
+  for compressed data and which, arriving from a preview, describe that JPEG.
 * **`UniqueCameraModel`**, which stays `Trichrome 3-way RGB merge`. This is the
   point of the split: the camera tags say what *took* the frames, while
   `UniqueCameraModel` says what the *file* is, so a converter still resolves its
@@ -216,10 +237,11 @@ unrotated sensor data, which is exactly what the source's tag is a claim about,
 so a sideways-mounted body's frames come up the right way.
 
 All of this is read in-process — a TIFF-structured raw (`.arw .nef .cr2 .dng
-.orf .pef .srw .rw2 .3fr`), Canon's `CMT` boxes in a `.cr3`, or the `APP1`
-segment of the JPEG inside a `.raf` — with no exiftool and no extra dependency.
-It is also the reason a merged file is still worth having after the RAWs are
-gone, rather than an anonymous grid of pixels.
+.orf .pef .srw .rw2 .3fr`) and any preview JPEG inside it, Canon's `CMT` boxes in
+a `.cr3`, or the `APP1` segment of the JPEG inside a `.raf` — with no exiftool
+and no extra dependency. It is also the reason a merged file is still worth
+having after the RAWs are gone, rather than an anonymous grid of pixels.
+
 If a source's metadata cannot be read, the merge is still written and verified
 and the run says so:
 
@@ -316,7 +338,9 @@ second. It covers the pure merge maths (CFA phase slicing, black/white-level
 normalisation, light order), the colorimetry behind the two matrices, the DNG's
 structure and the colour spec it is forced to state, the camera metadata it
 carries over (read back with tifffile's own EXIF parser, out of hand-built TIFF,
-CR3 and RAF sources in both byte orders), and every deletion-safety rule above.
+CR3 and RAF sources in both byte orders, a Panasonic-style raw whose full EXIF is
+in its preview, and Panasonic, Canon and Nikon maker notes), and every
+deletion-safety rule above.
 The end-to-end tests build synthetic RAWs, run the real decode over them, and
 hand the written file back to libraw to confirm it decodes to the merge that
 went in. Where exiftool is on `PATH`, one test also hands it a merged DNG to

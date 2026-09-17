@@ -180,6 +180,153 @@ def test_a_big_endian_source_reads_the_same_as_a_little_endian_one(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# When the raw's own EXIF is not the whole EXIF
+# --------------------------------------------------------------------------- #
+def test_a_sparse_raw_exif_is_filled_from_its_preview_jpeg(tmp_path):
+    """Panasonic's layout, reproduced from a DC-G9 RW2: the raw's own ExifIFD
+    has no ISO at all, and the full EXIF is in the preview JPEG's APP1."""
+    src = fx.write_sparse_raw_with_preview(tmp_path / "IMG_0997.rw2")
+    out, warning = written_dng(tmp_path, src)
+    assert warning is None
+    tags = exif_tags(out)
+    assert tags["ISOSpeedRatings"] == fx.ISO
+    assert tags["FNumber"] == fx.F_NUMBER
+    assert tags["DateTimeOriginal"] == fx.DATETIME
+
+
+def test_the_raw_s_own_value_wins_where_the_preview_disagrees(tmp_path):
+    src = fx.write_sparse_raw_with_preview(tmp_path / "s.rw2",
+                                           raw_focal=(45, 1))
+    out, _ = written_dng(tmp_path, src)
+    assert exif_tags(out)["FocalLength"] == (45, 1)     # not the preview's 44
+
+
+def test_a_big_endian_raw_merges_its_preview_in_the_same_byte_order(tmp_path):
+    src = fx.write_sparse_raw_with_preview(tmp_path / "s.rw2", order=">")
+    out, _ = written_dng(tmp_path, src)
+    tags = exif_tags(out)
+    assert tags["ISOSpeedRatings"] == fx.ISO
+    assert tags["ExposureTime"] == fx.EXPOSURE_TIME
+
+
+def test_the_jpeg_signature_in_image_data_is_not_mistaken_for_exif(tmp_path):
+    with_decoy = fx.write_sparse_raw_with_preview(tmp_path / "a.rw2", decoy=True)
+    without = fx.write_sparse_raw_with_preview(tmp_path / "b.rw2", decoy=False)
+    a = {e.tag: e.data for e in exif.read_source_metadata(with_decoy).exif}
+    b = {e.tag: e.data for e in exif.read_source_metadata(without).exif}
+    assert a == b
+
+
+def test_colour_space_is_restated_because_srgb_is_false_of_linear_data(tmp_path):
+    """The preview says sRGB, which is true of the preview. Copied onto linear
+    camera-native data it would be a claim the file cannot back."""
+    out, _ = written_dng(tmp_path,
+                         fx.write_sparse_raw_with_preview(tmp_path / "s.rw2"))
+    assert exif_tags(out)["ColorSpace"] == 0xFFFF             # Uncalibrated
+
+
+def test_the_preview_s_compression_tags_do_not_describe_the_dng(tmp_path):
+    out, _ = written_dng(tmp_path,
+                         fx.write_sparse_raw_with_preview(tmp_path / "s.rw2"))
+    tags = exif_tags(out)
+    assert "ComponentsConfiguration" not in tags
+    assert "CompressedBitsPerPixel" not in tags
+    assert (tags["PixelXDimension"], tags["PixelYDimension"]) == (14, 10)
+
+
+# --------------------------------------------------------------------------- #
+# The lens, out of a maker note
+# --------------------------------------------------------------------------- #
+def lens_source(tmp_path, note, order="<", make="Panasonic", exif=None,
+                name="s.raw"):
+    ifd0 = [(271, fx._ascii(make)), (272, fx._ascii("Body"))]
+    path = tmp_path / name
+    path.write_bytes(fx.exif_tiff(order, ifd0=ifd0, gps=[],
+                                  exif=fx.exif_without_lens(order)
+                                  if exif is None else exif,
+                                  note=note))
+    return str(path)
+
+
+@pytest.mark.parametrize("order", ["<", ">"])
+def test_a_panasonic_lens_becomes_standard_exif(tmp_path, order):
+    out, _ = written_dng(tmp_path,
+                         lens_source(tmp_path, fx.panasonic_note(order), order))
+    tags = exif_tags(out)
+    assert tags["LensModel"] == fx.PANASONIC_LENS
+    assert tags["LensSerialNumber"] == fx.PANASONIC_LENS_SERIAL
+
+
+@pytest.mark.parametrize("order", ["<", ">"])
+def test_a_canon_lens_becomes_standard_exif(tmp_path, order):
+    src = lens_source(tmp_path, fx.canon_note(order), order, make="Canon")
+    out, _ = written_dng(tmp_path, src)
+    assert exif_tags(out)["LensModel"] == fx.CANON_LENS
+
+
+def test_a_canon_cr3_lens_is_read_from_its_own_cmt3_box(tmp_path):
+    src = fx.write_cr3_source(tmp_path / "s.cr3", lens_note=True)
+    tags = {e.tag: e for e in exif.read_source_metadata(src).exif}
+    assert tags[42036].data.rstrip(b"\x00").decode() == fx.LENS_MODEL, \
+        "the EXIF LensModel CR3 already has must win"
+    bare = fx.write_cr3_source(tmp_path / "bare.cr3", lens_note=True,
+                               exif_lens=False)
+    tags = {e.tag: e for e in exif.read_source_metadata(bare).exif}
+    assert tags[42036].data.rstrip(b"\x00").decode() == fx.CANON_LENS
+
+
+@pytest.mark.parametrize("note_order", ["<", ">"])
+def test_a_nikon_lens_becomes_a_lens_specification_and_dng_lens_info(
+        tmp_path, note_order):
+    """Nikon's note is big-endian inside a little-endian file as often as not:
+    its rationals have to come out in the DNG's order, not the note's."""
+    src = lens_source(tmp_path, fx.nikon_note(note_order), "<", make="NIKON")
+    out, _ = written_dng(tmp_path, src)
+    spec = (105, 1, 105, 1, 28, 10, 28, 10)
+    assert exif_tags(out)["LensSpecification"] == spec
+    assert ifd0_tags(out)[50736] == spec
+
+
+def test_an_exif_lens_model_is_never_overridden_by_the_maker_note(tmp_path):
+    exif_with_lens = fx.exif_without_lens("<") + [(42036, fx._ascii("FROM EXIF"))]
+    src = lens_source(tmp_path, fx.panasonic_note("<"), exif=exif_with_lens)
+    out, _ = written_dng(tmp_path, src)
+    tags = exif_tags(out)
+    assert tags["LensModel"] == "FROM EXIF"
+    assert tags["LensSerialNumber"] == fx.PANASONIC_LENS_SERIAL   # still filled
+
+
+@pytest.mark.parametrize("placeholder", ["", "0000000", "----", "  0 - 0  "])
+def test_a_placeholder_is_not_a_lens(tmp_path, placeholder):
+    note = fx.panasonic_note("<", lens=placeholder, serial=placeholder)
+    out, _ = written_dng(tmp_path, lens_source(tmp_path, note))
+    tags = exif_tags(out)
+    assert "LensModel" not in tags and "LensSerialNumber" not in tags
+
+
+def test_an_unknown_lens_specification_is_not_written_as_f0(tmp_path):
+    """A manual or adapted lens is recorded as zeros: unknown, not f/0."""
+    note = fx.nikon_note(spec=((0, 0), (0, 0), (0, 0), (0, 0)))
+    out, _ = written_dng(tmp_path, lens_source(tmp_path, note, make="NIKON"))
+    assert "LensSpecification" not in exif_tags(out)
+    assert 50736 not in ifd0_tags(out)
+
+
+def test_a_maker_note_from_a_vendor_it_does_not_know_yields_nothing(tmp_path):
+    src = lens_source(tmp_path, fx.canon_note("<"), make="SONY")
+    out, warning = written_dng(tmp_path, src)
+    assert warning is None
+    assert "LensModel" not in exif_tags(out)
+
+
+def test_the_maker_note_itself_still_does_not_travel(tmp_path):
+    out, _ = written_dng(tmp_path,
+                         lens_source(tmp_path, fx.panasonic_note("<")))
+    assert "MakerNote" not in exif_tags(out)
+    assert b"Panasonic\x00\x00\x00" not in open(out, "rb").read()
+
+
+# --------------------------------------------------------------------------- #
 # The DNG is still the DNG it was
 # --------------------------------------------------------------------------- #
 def test_the_colour_tags_and_the_merge_marker_are_not_disturbed(tmp_path):

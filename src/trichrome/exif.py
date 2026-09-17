@@ -30,27 +30,50 @@ metering, focal length, lens, the date and time, and everything else the body
 recorded — plus its GPS IFD, and the identifying tags from its IFD0 (`Make`,
 `Model`, `DateTime`, `Artist`, `Copyright`, `Orientation`).
 
+"The source's EXIF" is not always one directory. A raw may carry a preview JPEG
+with EXIF of its own, and some bodies put MORE there than in the raw: a
+Panasonic DC-G9's RW2 has a 16-tag ExifIFD with no ISO in it at all, while the
+40-tag one — ISO, sensitivity type, 35 mm-equivalent focal length, scene tags —
+is in the preview's APP1. So every EXIF this module can find in the file is
+read, and they are unioned: the raw's own directories win every tag they state,
+and a preview only fills in what they left out.
+
 Verbatim means the bytes: each tag keeps its own type and count, and is
 byte-swapped only when the source's endianness differs from the DNG's (Nikon
 writes big-endian NEFs; tifffile writes the DNG in the host's order). Nothing is
 parsed into a value and re-encoded, so nothing is lost in a round trip through a
 Python type.
 
-Four exceptions, and why each one is not "everything":
+The exceptions, and why each one is not "everything":
 
-* **MakerNote** (37500) is dropped. Most vendors' maker notes store their
-  internal offsets relative to the start of the ORIGINAL file, so the block is
-  only meaningful where it was written; copied into a file of a different length
-  it points at whatever now sits at those addresses. A dropped maker note loses
-  the vendor-private extras (Adobe's converter carries them with per-vendor
-  fixups this tool does not attempt); everything standardised — including
-  `LensModel` and `LensSpecification` on any body of the last fifteen years —
-  lives in the EXIF IFD proper and survives.
+* **MakerNote** (37500) is dropped. A maker note's internal offsets are measured
+  from a base that differs by vendor — the original file's TIFF header, the
+  enclosing EXIF block's, a TIFF header of the note's own — so the block is only
+  meaningful where it was written; copied into a file of another shape it
+  points at whatever now sits at those addresses. Adobe's converter carries
+  notes with per-vendor fixups this tool does not attempt.
+
+  The LENS is rescued from it first, because some bodies record the lens
+  nowhere else — the DC-G9 above has no `LensModel` in either of its EXIF
+  directories, only Panasonic's own tag in the note. For the layouts this
+  module knows (see _lens_from_maker_note), the note is read while its base is
+  still at hand and the lens is restated in standard EXIF: `LensModel` and
+  `LensSerialNumber` for Panasonic, `LensModel` for Canon, `LensSpecification`
+  (and so the DNG's `LensInfo`) for Nikon. A standard tag the EXIF already has
+  always wins; a placeholder (empty, all zeros, dashes, a zero-aperture lens) is
+  refused rather than written; and an unknown layout yields nothing, never a
+  guess.
 * **The Interoperability IFD pointer** (40965) is dropped, as a pointer whose
   target this module does not relocate.
 * **PixelXDimension / PixelYDimension** (40962/40963) are REPLACED with the
   merged image's own dimensions. They describe the image in the file, and a
   photosite merge is half the source's width and height.
+* **ColorSpace** (40961) is REPLACED with Uncalibrated. A source says sRGB —
+  true of the preview JPEG that EXIF usually describes, false of linear
+  camera-native data, which is what Uncalibrated exists to say.
+* **ComponentsConfiguration** and **CompressedBitsPerPixel** (37121/37122) are
+  dropped. EXIF defines them for compressed data only; arriving from a preview,
+  they describe how that JPEG was compressed, and this file is not.
 * IFD0's structural tags — `ImageWidth`, `StripOffsets`, `PhotometricInterpret-
   ation`, the source's own DNG colour tags when it is itself a DNG — are not
   copied at all. They describe the source's pixels, and copying them would
@@ -106,10 +129,13 @@ only in how you find it.
   IS a TIFF. Some use a private version number in place of 42 (Panasonic's 85,
   Olympus's `RO`/`RS`), which is ignored here: only the byte order and the
   offsets matter. The EXIF pointer is looked for in each top-level IFD and each
-  SubIFD, because not every vendor puts it in the first one.
+  SubIFD, because not every vendor puts it in the first one — and then any
+  preview JPEG embedded in the file is read too, found by its signature rather
+  than by a per-vendor pointer tag (see _embedded_jpeg_exif).
 * **CR3** (`.cr3`) is ISO-BMFF, not TIFF. The EXIF survives inside a Canon
   `uuid` box in `moov` as the boxes `CMT1` (the IFD0 tags), `CMT2` (the EXIF
-  IFD) and `CMT4` (GPS), each a complete little TIFF of its own.
+  IFD), `CMT3` (the maker note) and `CMT4` (GPS), each a complete little TIFF of
+  its own.
 * **RAF** (`.raf`) wraps a full-size JPEG whose `APP1` segment holds the EXIF,
   at the offset the RAF header's directory gives.
 
@@ -133,6 +159,7 @@ _TYPE_SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8,
 _SWAP_UNIT = {3: 2, 8: 2, 4: 4, 9: 4, 11: 4, 13: 4, 5: 4, 10: 4, 12: 8}
 
 _TYPE_ASCII = 2
+_TYPE_SHORT = 3
 _TYPE_LONG = 4
 _TYPE_RATIONAL = 5
 # TIFF's own type for a sub-IFD pointer, which a vendor may use in place of LONG.
@@ -151,11 +178,38 @@ _TAG_EXIF_IFD = 34665
 _TAG_GPS_IFD = 34853
 _TAG_DATETIME_ORIGINAL = 36867
 _TAG_MAKER_NOTE = 37500
+_TAG_COMPONENTS_CONFIGURATION = 37121
+_TAG_COMPRESSED_BITS_PER_PIXEL = 37122
+_TAG_COLOR_SPACE = 40961
 _TAG_PIXEL_X_DIMENSION = 40962
 _TAG_PIXEL_Y_DIMENSION = 40963
 _TAG_INTEROPERABILITY_IFD = 40965
 _TAG_BODY_SERIAL_NUMBER = 42033
 _TAG_LENS_SPECIFICATION = 42034
+_TAG_LENS_MODEL = 42036
+_TAG_LENS_SERIAL_NUMBER = 42037
+
+# Where three vendors keep the lens inside a maker note, for bodies that do not
+# also state it in the EXIF IFD proper (see _lens_from_maker_note). Each layout
+# is a header, where the note's own directory starts, and what its offsets are
+# measured from — the part that differs, and the reason a maker note cannot
+# simply be read as a plain IFD.
+#
+# Panasonic: "Panasonic\0\0\0", then a directory addressed from the ENCLOSING
+# block's TIFF header. Verified against a DC-G9 RW2, whose full EXIF (and this
+# note) sit in the preview JPEG rather than the raw's own ExifIFD.
+_PANASONIC_HEADER = b"Panasonic\x00\x00\x00"
+_PANASONIC_LENS_TYPE = 0x0051
+_PANASONIC_LENS_SERIAL_NUMBER = 0x0052
+# Canon: no header at all — the note IS a directory, addressed from the
+# enclosing TIFF header (a CR2's file, or a CR3's own CMT3 box).
+_CANON_LENS_MODEL = 0x0095
+# Nikon, type 3: "Nikon\0\2" and a version, then a complete TIFF of its own at
+# +10, every offset measured from THAT header. Nikon records no lens name in the
+# note, but its Lens tag is the same four rationals as LensSpecification.
+_NIKON_HEADER = b"Nikon\x00\x02"
+_NIKON_TIFF_AT = 10
+_NIKON_LENS = 0x0084
 
 # DNG tags filled from the EXIF, which a converter looks for in IFD0.
 _TAG_CAMERA_SERIAL_NUMBER = 50735
@@ -170,17 +224,30 @@ _IFD0_COPY = (_TAG_IMAGE_DESCRIPTION, _TAG_MAKE, _TAG_MODEL, _TAG_ORIENTATION,
               _TAG_CAMERA_SERIAL_NUMBER, _TAG_LENS_INFO)
 
 # Dropped from the copied EXIF IFD: a block whose internal offsets do not
-# survive the move, a pointer to an IFD this module does not relocate, and the
-# two dimensions that are restated for the merged image.
+# survive the move, a pointer to an IFD this module does not relocate, the two
+# dimensions that are restated for the merged image, and two tags that EXIF
+# defines only for COMPRESSED data — they arrive from a preview JPEG and say
+# how that JPEG was compressed, which is no description of an uncompressed DNG.
 _EXIF_DROP = frozenset((_TAG_MAKER_NOTE, _TAG_INTEROPERABILITY_IFD,
                         _TAG_EXIF_IFD, _TAG_GPS_IFD,
-                        _TAG_PIXEL_X_DIMENSION, _TAG_PIXEL_Y_DIMENSION))
+                        _TAG_PIXEL_X_DIMENSION, _TAG_PIXEL_Y_DIMENSION,
+                        _TAG_COMPONENTS_CONFIGURATION,
+                        _TAG_COMPRESSED_BITS_PER_PIXEL))
+
+# EXIF's ColorSpace code for "not sRGB, and not describable here": what a raw
+# file states, and what this one has to state (see _plan_entries).
+_COLOR_SPACE_UNCALIBRATED = 0xFFFF
 
 # Sanity bounds for parsing a source's directories. A real EXIF IFD has a few
 # dozen entries and no value anywhere near this size; anything past these is a
 # misparse (a "TIFF" offset landing in image data reads as a plausible-looking
 # directory), and would otherwise have this module allocating from garbage.
 _MAX_IFD_ENTRIES = 512
+# How many JPEG signatures in a raw are worth testing for EXIF, and how far past
+# one to look for its APP1. A raw carries a preview or two; anything beyond that
+# is the image data coincidentally spelling the signature.
+_MAX_EMBEDDED_JPEGS = 8
+_MAX_APP1_SPAN = 1 << 20
 _MAX_VALUE_BYTES = 1 << 20
 _MAX_IFDS = 32
 
@@ -191,11 +258,16 @@ _BIGTIFF_VERSION = 43
 
 class Entry(NamedTuple):
     """One IFD entry, kept as the bytes the source held: `data` is the value
-    exactly as it was stored, in `SourceMetadata.byteorder`."""
+    exactly as it was stored, in `SourceMetadata.byteorder`.
+
+    `offset` is where that value sat in the block it was read from, or -1 for an
+    entry this module made itself. It matters for exactly one tag: a maker
+    note's own directory is found by its position, not by its bytes."""
     tag: int
     type: int
     count: int
     data: bytes
+    offset: int = -1
 
 
 @dataclass
@@ -262,14 +334,14 @@ class _Tiff:
             if size == 0 or size > _MAX_VALUE_BYTES:
                 continue
             if size <= 4:
-                data = self.buf[p + 8:p + 8 + size]
+                voff = p + 8
             else:
                 voff = self.u32(p + 8)
                 if voff + size > len(self.buf):
                     continue
-                data = self.buf[voff:voff + size]
+            data = self.buf[voff:voff + size]
             if len(data) == size:
-                entries.append(Entry(tag, typ, n, data))
+                entries.append(Entry(tag, typ, n, bytes(data), voff))
         return entries, self.u32(end)
 
     def directories(self) -> List[List[Entry]]:
@@ -308,8 +380,131 @@ def _pointer(entries: Sequence[Entry], tag: int, byteorder: str) -> Optional[int
     return None
 
 
-def _from_tiff(buf: bytes, filename: str) -> SourceMetadata:
-    """Pull the metadata out of a TIFF-structured block."""
+def _clean_ascii(data: bytes) -> Optional[str]:
+    """A maker note's text value as a string fit to write into EXIF, or None.
+
+    Vendors pad with NULs, and write placeholders where there is nothing to
+    record — an empty string, a run of zeros for an unrecorded serial, dashes
+    for an unidentified adapted lens. None of those is a lens, and a lens tag
+    that says "0000000" is worse than no lens tag, so they are refused along
+    with anything that is not printable ASCII."""
+    text = bytes(data).split(b"\x00", 1)[0].strip()
+    if not text or any(b < 0x20 or b > 0x7E for b in text):
+        return None
+    if not text.strip(b"0- "):
+        return None
+    return text.decode("ascii")
+
+
+def _sane_lens_specification(data: bytes, byteorder: str) -> bool:
+    """Whether four rationals read as a real lens: focal lengths in order and
+    in range, apertures in range, no zero denominators. A manual or adapted
+    lens is often recorded as zeros here, which is "unknown", not f/0."""
+    if len(data) != 32:
+        return False
+    vals = struct.unpack(byteorder + "8I", data)
+    if any(vals[i] == 0 for i in (1, 3, 5, 7)):
+        return False
+    focal_min, focal_max, f_wide, f_tele = (vals[i] / vals[i + 1]
+                                            for i in (0, 2, 4, 6))
+    return (1 <= focal_min <= focal_max <= 5000
+            and 0.5 <= f_wide <= 64 and 0.5 <= f_tele <= 64)
+
+
+def _lens_entries(vendor: Sequence[Entry], vendor_order: str, byteorder: str,
+                  model: Optional[int] = None,
+                  serial: Optional[int] = None,
+                  spec: Optional[int] = None) -> List[Entry]:
+    """Standard EXIF lens entries made from a maker note's directory, in
+    `byteorder`. Only tags that validate come back; a vendor tag that is
+    missing, mistyped or a placeholder simply contributes nothing."""
+    found = {e.tag: e for e in vendor}
+    out: List[Entry] = []
+    for vendor_tag, exif_tag in ((model, _TAG_LENS_MODEL),
+                                 (serial, _TAG_LENS_SERIAL_NUMBER)):
+        e = found.get(vendor_tag) if vendor_tag is not None else None
+        if e is not None and e.type == _TYPE_ASCII:
+            text = _clean_ascii(e.data)
+            if text:
+                out.append(_ascii(exif_tag, text))
+    e = found.get(spec) if spec is not None else None
+    if (e is not None and e.type == _TYPE_RATIONAL and e.count == 4
+            and _sane_lens_specification(e.data, vendor_order)):
+        data = e.data if vendor_order == byteorder else _swapped(e.data, e.type)
+        out.append(Entry(_TAG_LENS_SPECIFICATION, _TYPE_RATIONAL, 4, data))
+    return out
+
+
+def _make_of(entries: Sequence[Entry]) -> str:
+    """The `Make` a directory names, or "" when it names none."""
+    for e in entries:
+        if e.tag == _TAG_MAKE and e.type == _TYPE_ASCII:
+            return bytes(e.data).split(b"\x00", 1)[0].decode("ascii", "replace")
+    return ""
+
+
+def _lens_from_maker_note(tiff: "_Tiff", exif: Sequence[Entry],
+                          make: str) -> List[Entry]:
+    """The lens, as standard EXIF entries, out of the maker note in `exif` —
+    for the bodies that record it nowhere else.
+
+    The maker note itself is still not carried into the DNG (see the module
+    docstring): its offsets are measured from a base that differs per vendor,
+    and copied into a file of another shape it reads as nonsense. The lens is
+    the part worth rescuing from it, so this reads the note HERE, while the
+    block its offsets are measured from is still at hand, and restates what it
+    finds in the standard tags every converter reads. A layout this does not
+    know, or a value that does not validate, yields nothing — never a guess."""
+    note = next((e for e in exif if e.tag == _TAG_MAKER_NOTE), None)
+    if note is None or note.offset < 0:
+        return []
+    try:
+        if note.data.startswith(_PANASONIC_HEADER):
+            vendor = tiff.ifd(note.offset + len(_PANASONIC_HEADER))[0]
+            return _lens_entries(vendor, tiff.byteorder, tiff.byteorder,
+                                 model=_PANASONIC_LENS_TYPE,
+                                 serial=_PANASONIC_LENS_SERIAL_NUMBER)
+        if note.data.startswith(_NIKON_HEADER):
+            inner = _Tiff(note.data[_NIKON_TIFF_AT:])
+            vendor = inner.ifd(inner.first_ifd)[0]
+            return _lens_entries(vendor, inner.byteorder, tiff.byteorder,
+                                 spec=_NIKON_LENS)
+        if make.upper().startswith("CANON"):
+            vendor = tiff.ifd(note.offset)[0]
+            return _lens_entries(vendor, tiff.byteorder, tiff.byteorder,
+                                 model=_CANON_LENS_MODEL)
+    except (ValueError, struct.error):
+        pass
+    return []
+
+
+def _merged(primary: List[Entry], extra: List[Entry]) -> List[Entry]:
+    """`primary`, plus any tag from `extra` it does not already carry. The raw's
+    own directories win every tag they state; the rest is what the preview knew
+    and the raw did not."""
+    have = {e.tag for e in primary}
+    return primary + [e for e in extra if e.tag not in have]
+
+
+def _reordered(meta: SourceMetadata, byteorder: str) -> SourceMetadata:
+    """`meta` with every value rewritten in `byteorder`. A raw and the JPEG
+    inside it are usually written the same way round, but nothing guarantees
+    it."""
+    def convert(entries):
+        return [Entry(e.tag, e.type, e.count, _swapped(e.data, e.type))
+                for e in entries]
+    return SourceMetadata(ifd0=convert(meta.ifd0), exif=convert(meta.exif),
+                          gps=convert(meta.gps), byteorder=byteorder,
+                          filename=meta.filename)
+
+
+def _from_tiff(buf, filename: str, embedded: bool = True) -> SourceMetadata:
+    """Pull the metadata out of a TIFF-structured block.
+
+    `embedded=True` also unions in the EXIF of any JPEG carried inside `buf` —
+    which is where Panasonic, and it is not alone, keeps the tags its own
+    ExifIFD leaves out. Set False when parsing a block that IS such a JPEG's
+    EXIF, so the search does not recurse."""
     tiff = _Tiff(buf)
     dirs = tiff.directories()
     if not dirs:
@@ -340,6 +535,19 @@ def _from_tiff(buf: bytes, filename: str) -> SourceMetadata:
         return {e.tag for e in entries} & {_TAG_MAKE, _TAG_MODEL, _TAG_DATETIME}
     main = next((d for d in dirs if named(d)), dirs[0])
     ifd0 = [e for e in main if e.tag in _IFD0_COPY]
+    # EXIF proper wins: a body that states its lens in LensModel keeps that,
+    # and the maker note only fills what the EXIF IFD left out.
+    exif = _merged(exif, _lens_from_maker_note(tiff, exif, _make_of(main)))
+
+    if embedded:
+        for preview in _embedded_jpeg_exif(buf, filename):
+            if preview.byteorder != tiff.byteorder:
+                # Both are about to be written in ONE directory, so they have to
+                # agree on byte order before they are merged, not after.
+                preview = _reordered(preview, tiff.byteorder)
+            exif = _merged(exif, preview.exif)
+            gps = _merged(gps, preview.gps)
+            ifd0 = _merged(ifd0, preview.ifd0)
     return SourceMetadata(ifd0=ifd0, exif=exif, gps=gps,
                           byteorder=tiff.byteorder, filename=filename)
 
@@ -367,9 +575,9 @@ def _boxes(data: bytes, start: int, end: int):
 
 def _from_cr3(data: bytes, filename: str) -> SourceMetadata:
     """CR3: ISO-BMFF. The EXIF lives in a Canon `uuid` box inside `moov`, as the
-    boxes CMT1 (IFD0 tags), CMT2 (the EXIF IFD) and CMT4 (GPS) — each a complete
-    little TIFF in its own right, so each is parsed as one and the three results
-    are combined."""
+    boxes CMT1 (IFD0 tags), CMT2 (the EXIF IFD), CMT3 (the maker note) and CMT4
+    (GPS) — each a complete little TIFF in its own right, so each is parsed as
+    one and the results are combined."""
     canon_uuid = bytes((0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0,
                         0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a, 0x48))
     blocks: Dict[bytes, bytes] = {}
@@ -382,12 +590,12 @@ def _from_cr3(data: bytes, filename: str) -> SourceMetadata:
                 scan(body, stop, depth + 1)
             elif kind == b"uuid" and data[body:body + 16] == canon_uuid:
                 scan(body + 16, stop, depth + 1)
-            elif kind in (b"CMT1", b"CMT2", b"CMT4"):
+            elif kind in (b"CMT1", b"CMT2", b"CMT3", b"CMT4"):
                 blocks.setdefault(kind, data[body:stop])
 
     scan(0, len(data))
     if not blocks:
-        raise ValueError("no Canon metadata boxes (CMT1/CMT2/CMT4) in the CR3")
+        raise ValueError("no Canon metadata boxes (CMT1-CMT4) in the CR3")
 
     meta = SourceMetadata(filename=filename)
     if b"CMT1" in blocks:
@@ -399,10 +607,70 @@ def _from_cr3(data: bytes, filename: str) -> SourceMetadata:
             tiff = _Tiff(blocks[box])
             setattr(meta, attr, tiff.ifd(tiff.first_ifd)[0])
             meta.byteorder = tiff.byteorder
+    # CMT3 is the maker note, as a TIFF of its own rather than a tag in CMT2,
+    # so its directory is simply that TIFF's first.
+    if b"CMT3" in blocks and _make_of(meta.ifd0).upper().startswith("CANON"):
+        try:
+            note = _Tiff(blocks[b"CMT3"])
+            lens = _lens_entries(note.ifd(note.first_ifd)[0], note.byteorder,
+                                 meta.byteorder, model=_CANON_LENS_MODEL)
+            meta.exif = _merged(meta.exif, lens)
+        except (ValueError, struct.error):
+            pass
     return meta
 
 
-def _from_raf(data: bytes, filename: str) -> SourceMetadata:
+def _jpeg_exif_block(data, start: int, end: int) -> Optional[bytes]:
+    """The TIFF block inside the APP1 segment of the JPEG at `start`, or None
+    when that JPEG carries no EXIF. Walks the marker segments rather than
+    trusting APP1 to be first, because it need not be."""
+    pos = start + 2                                     # past SOI
+    while pos + 4 <= end and data[pos] == 0xFF:
+        marker = data[pos + 1]
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            pos += 2
+            continue
+        seglen = struct.unpack_from(">H", data, pos + 2)[0]
+        if marker == 0xE1 and data[pos + 4:pos + 10] == b"Exif\x00\x00":
+            return bytes(data[pos + 10:pos + 2 + seglen])
+        if marker == 0xDA:                              # image data; no EXIF
+            return None
+        pos += 2 + seglen
+    return None
+
+
+def _embedded_jpeg_exif(data, filename: str) -> List[SourceMetadata]:
+    """The metadata of every EXIF-bearing JPEG embedded in `data`, in the order
+    they appear.
+
+    A raw's own directories are not always where its EXIF is. Panasonic writes a
+    SPARSE ExifIFD into the RW2 — no ISO, no sensitivity, no scene tags — and the
+    full one into the APP1 of the preview JPEG it carries; several other vendors
+    keep a preview with equally good EXIF. Rather than learn each vendor's
+    preview pointer (Panasonic's JpgFromRaw, a SubIFD's strips, an IFD1
+    thumbnail, …), this scans for the JPEG signature itself, which is
+    vendor-independent, and then makes every candidate prove it is one: SOI +
+    APP1, an `Exif\x00\x00` marker, a parseable TIFF with a readable IFD. Raw
+    image data that happens to contain the four signature bytes fails that and
+    costs one rejected parse."""
+    found: List[SourceMetadata] = []
+    at = 0
+    while len(found) < _MAX_EMBEDDED_JPEGS:
+        at = data.find(b"\xff\xd8\xff\xe1", at)
+        if at < 0:
+            break
+        block = _jpeg_exif_block(data, at, min(len(data), at + _MAX_APP1_SPAN))
+        at += 4
+        if not block:
+            continue
+        try:
+            found.append(_from_tiff(block, filename, embedded=False))
+        except (ValueError, struct.error):
+            continue
+    return found
+
+
+def _from_raf(data, filename: str) -> SourceMetadata:
     """RAF: Fujifilm's own container, whose header directory points at a
     full-size JPEG. The EXIF is that JPEG's APP1 segment."""
     if len(data) < 92:
@@ -411,19 +679,10 @@ def _from_raf(data: bytes, filename: str) -> SourceMetadata:
     if jpeg_off <= 0 or jpeg_off + 4 > len(data):
         raise ValueError("RAF names no embedded JPEG")
     end = min(len(data), jpeg_off + (jpeg_len or len(data)))
-    pos = jpeg_off + 2                                  # past SOI
-    while pos + 4 <= end and data[pos] == 0xFF:
-        marker = data[pos + 1]
-        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
-            pos += 2
-            continue
-        seglen = struct.unpack_from(">H", data, pos + 2)[0]
-        if marker == 0xE1 and data[pos + 4:pos + 10] == b"Exif\x00\x00":
-            return _from_tiff(data[pos + 10:pos + 2 + seglen], filename)
-        if marker == 0xDA:                              # image data; no EXIF
-            break
-        pos += 2 + seglen
-    raise ValueError("no EXIF segment in the RAF's embedded JPEG")
+    block = _jpeg_exif_block(data, jpeg_off, end)
+    if block is None:
+        raise ValueError("no EXIF segment in the RAF's embedded JPEG")
+    return _from_tiff(block, filename)
 
 
 def read_source_metadata(path: str) -> SourceMetadata:
@@ -546,6 +805,14 @@ def _plan_entries(meta: SourceMetadata, byteorder: str,
         height, width = pixel_size
         exif.append(_long(_TAG_PIXEL_X_DIMENSION, int(width), byteorder))
         exif.append(_long(_TAG_PIXEL_Y_DIMENSION, int(height), byteorder))
+    if exif:
+        # Also restated rather than copied. A source's ColorSpace says sRGB —
+        # true of the preview JPEG it usually comes from, and false of linear
+        # camera-native data, which is exactly what Uncalibrated exists to say.
+        exif = [e for e in exif if e.tag != _TAG_COLOR_SPACE]
+        exif.append(Entry(_TAG_COLOR_SPACE, _TYPE_SHORT, 1,
+                          struct.pack(byteorder + "H",
+                                      _COLOR_SPACE_UNCALIBRATED)))
 
     by_tag = {e.tag: e for e in ifd0}
     source_exif = {e.tag: e for e in exif}

@@ -111,12 +111,28 @@ def gps_entries(order):
             (2, _rational(order, *GPS_LATITUDE))]       # GPSLatitude
 
 
-def exif_tiff(order="<", maker_note=True, ifd0=None, exif=None, gps=None):
+def _value_position(entries, base, tag):
+    """Where `_ifd` will put `tag`'s value when the directory is placed at
+    `base` — for a maker note, whose own offsets depend on where it lands."""
+    entries = sorted(entries, key=lambda e: e[0])
+    body = 2 + 12 * len(entries) + 4
+    for t, (_typ, data) in entries:
+        if len(data) > 4:
+            if t == tag:
+                return base + body
+            body += len(data) + len(data) % 2
+    raise ValueError(f"tag {tag} has no out-of-line value")
+
+
+def exif_tiff(order="<", maker_note=True, ifd0=None, exif=None, gps=None,
+              note=None):
     """A complete standalone TIFF — header, IFD0, EXIF IFD, GPS IFD — which is
     what every one of the three containers holds, however it wraps it.
 
     Pass `exif=[]`/`gps=[]` for a file that names no such directory, as some
-    scanner and machine-vision "raws" genuinely do not."""
+    scanner and machine-vision "raws" genuinely do not. `note` is a maker note
+    builder, `position -> bytes`, for notes addressed from this block's header:
+    it is called once to size the note and again once its position is known."""
     ifd0 = ifd0_entries(order) if ifd0 is None else ifd0
     exif = exif_entries(order, maker_note) if exif is None else exif
     gps = gps_entries(order) if gps is None else gps
@@ -127,6 +143,10 @@ def exif_tiff(order="<", maker_note=True, ifd0=None, exif=None, gps=None):
         return _ifd(order, ifd0 + pointers, 8)
 
     exif_off = 8 + len(directory(0, 0))     # pointers are inline: size is fixed
+    if note is not None:
+        sized = exif + [(37500, (_UNDEFINED, note(0)))]
+        at = _value_position(sized, exif_off, 37500)
+        exif = exif + [(37500, (_UNDEFINED, note(at)))]
     exif_block = _ifd(order, exif, exif_off)
     gps_off = exif_off + len(exif_block)
     header = (b"II\x2a\x00" if order == "<" else b"MM\x00\x2a")
@@ -147,10 +167,14 @@ def _box(kind, payload):
     return struct.pack(">I", len(payload) + 8) + kind + payload
 
 
-def write_cr3_source(path, order="<"):
+def write_cr3_source(path, order="<", lens_note=False, exif_lens=True):
     """A CR3: ISO-BMFF, with the EXIF in CMT1/CMT2/CMT4 inside a Canon `uuid`
     box in `moov`. Each CMT box is a complete TIFF of its own, so the fixture's
-    one TIFF is split into three here — which is exactly what Canon does."""
+    one TIFF is split into three here — which is exactly what Canon does.
+
+    `lens_note` adds CMT3, the maker note, carrying a Canon lens name (and
+    names the body Canon, which is what the note is read by). `exif_lens=False`
+    leaves the standard lens tags out of CMT2, so the note is the only source."""
     canon_uuid = bytes((0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0,
                         0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a, 0x48))
     header = (b"II\x2a\x00" if order == "<" else b"MM\x00\x2a") + \
@@ -159,22 +183,32 @@ def write_cr3_source(path, order="<"):
     def tiff(entries):
         return header + _ifd(order, entries, 8)
 
-    uuid_box = _box(b"uuid", canon_uuid
-                    + _box(b"CMT1", tiff(ifd0_entries(order)))
-                    + _box(b"CMT2", tiff(exif_entries(order)))
-                    + _box(b"CMT4", tiff(gps_entries(order))))
+    ifd0 = ifd0_entries(order)
+    if lens_note:
+        ifd0 = [e for e in ifd0 if e[0] != 271] + [(271, _ascii("Canon"))]
+    exif = exif_entries(order) if exif_lens else exif_without_lens(order)
+    boxes = (_box(b"CMT1", tiff(ifd0)) + _box(b"CMT2", tiff(exif))
+             + _box(b"CMT4", tiff(gps_entries(order))))
+    if lens_note:
+        boxes += _box(b"CMT3", tiff([(0x0001, _short(order, 1, 2, 3)),
+                                     (0x0095, _ascii(CANON_LENS))]))
+    uuid_box = _box(b"uuid", canon_uuid + boxes)
     with open(str(path), "wb") as fh:
         fh.write(_box(b"ftyp", b"crx isom") + _box(b"moov", uuid_box))
     return str(path)
 
 
+def jpeg_with_exif(tiff):
+    """A minimal JPEG whose APP1 carries `tiff` as its EXIF."""
+    app1 = b"Exif\x00\x00" + tiff
+    return (b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", len(app1) + 2)
+            + app1 + b"\xff\xda\x00\x08bits" + b"\xff\xd9")
+
+
 def write_raf_source(path, order="<"):
     """A RAF: Fujifilm's container, whose header directory points at a full-size
     JPEG whose APP1 segment holds the EXIF."""
-    tiff = exif_tiff(order)
-    app1 = b"Exif\x00\x00" + tiff
-    jpeg = (b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", len(app1) + 2)
-            + app1 + b"\xff\xda\x00\x08bits" + b"\xff\xd9")
+    jpeg = jpeg_with_exif(exif_tiff(order))
     head = bytearray(b"FUJIFILMCCD-RAW ")
     head += b"0201" + b"FF129502" + b"X-T5".ljust(32, b"\x00")
     head += struct.pack(">I", 0)                 # directory version
@@ -184,3 +218,95 @@ def write_raf_source(path, order="<"):
     with open(str(path), "wb") as fh:
         fh.write(bytes(head) + jpeg)
     return str(path)
+
+
+# --------------------------------------------------------------------------- #
+# Maker notes, and the one layout where the EXIF is not in the raw at all
+# --------------------------------------------------------------------------- #
+PANASONIC_LENS = "LEICA DG MACRO-ELMARIT 45/F2.8"
+PANASONIC_LENS_SERIAL = "10120600429"
+CANON_LENS = "RF100mm F2.8 L MACRO IS USM"
+NIKON_LENS_SPEC = ((105, 1), (105, 1), (28, 10), (28, 10))
+
+
+def panasonic_note(order, lens=PANASONIC_LENS, serial=PANASONIC_LENS_SERIAL):
+    """Panasonic's layout: a 12-byte header, then a directory whose values are
+    addressed from the ENCLOSING block's TIFF header."""
+    header = b"Panasonic\x00\x00\x00"
+
+    def build(at):
+        return header + _ifd(order, [(0x0001, (_UNDEFINED, b"0470")),
+                                     (0x0051, _ascii(lens)),
+                                     (0x0052, _ascii(serial))],
+                             at + len(header))
+    return build
+
+
+def canon_note(order, lens=CANON_LENS):
+    """Canon's layout: no header — the note is a directory, addressed from the
+    enclosing TIFF header."""
+    def build(at):
+        return _ifd(order, [(0x0001, _short(order, 1, 2, 3)),
+                            (0x0095, _ascii(lens))], at)
+    return build
+
+
+def nikon_note(order=">", spec=NIKON_LENS_SPEC):
+    """Nikon's type-3 layout: a header and a complete TIFF of its own, every
+    offset measured from that inner header — so it is the same bytes wherever
+    it lands. Big-endian by default, as Nikon writes it."""
+    inner = ((b"MM\x00\x2a" if order == ">" else b"II\x2a\x00")
+             + struct.pack(order + "I", 8)
+             + _ifd(order, [(0x0001, (_UNDEFINED, b"0211")),
+                            (0x0084, _rational(order, *spec))], 8))
+    note = b"Nikon\x00\x02\x10\x00\x00" + inner
+    return lambda at: note
+
+
+def exif_without_lens(order):
+    """The fixture exposure, minus every standard lens tag — the case a maker
+    note is read for."""
+    return [e for e in exif_entries(order, maker_note=False)
+            if e[0] not in (42033, 42034, 42036)]
+
+
+def preview_only_exif(order):
+    """What Panasonic's preview JPEG states and its raw does not: the full
+    exposure, plus the three tags that describe a JPEG's compression and
+    colour rather than a raw's."""
+    return [e for e in exif_without_lens(order) if e[0] not in (40962, 40963)] + [
+        (37121, (_UNDEFINED, bytes((1, 2, 3, 0)))),     # ComponentsConfiguration
+        (37122, _rational(order, (2, 1))),              # CompressedBitsPerPixel
+        (40961, _short(order, 1)),                      # ColorSpace: sRGB
+        (40962, _long(order, 1920)),                    # PixelXDimension
+        (40963, _long(order, 1440)),                    # PixelYDimension
+    ]
+
+
+def write_sparse_raw_with_preview(path, order="<", raw_focal=(45, 1),
+                                  decoy=True):
+    """Panasonic's arrangement: a raw whose OWN ExifIFD holds a handful of tags
+    — no ISO — carrying a preview JPEG whose APP1 holds the full set and the
+    maker note with the lens.
+
+    The raw states a focal length the preview disagrees with, so a test can
+    tell whose value won. `decoy` puts the JPEG signature in the "image data"
+    ahead of the real preview, followed by something that is not EXIF."""
+    ifd0 = [(271, _ascii("Panasonic")), (272, _ascii("DC-G9")),
+            (306, _ascii(DATETIME))]
+    sparse = [(33434, _rational(order, EXPOSURE_TIME)),
+              (36867, _ascii(DATETIME)),
+              (37386, _rational(order, raw_focal))]
+    raw = exif_tiff(order, ifd0=ifd0, exif=sparse, gps=[])
+    preview = exif_tiff(order, ifd0=ifd0, gps=[],
+                        exif=[e for e in preview_only_exif(order)
+                              if e[0] != 37386]
+                        + [(37386, _rational(order, (44, 1)))],
+                        note=panasonic_note(order))
+    body = b"\x00" * 64
+    if decoy:
+        body += b"\xff\xd8\xff\xe1\x00\x10not-exif-at-all" + b"\x00" * 32
+    with open(str(path), "wb") as fh:
+        fh.write(raw + body + jpeg_with_exif(preview))
+    return str(path)
+
