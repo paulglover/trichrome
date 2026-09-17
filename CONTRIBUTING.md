@@ -54,18 +54,25 @@ installed.
 `main`, against Python 3.9, 3.11 and 3.13 — the ends of the range declared in
 `pyproject.toml`, plus one in the middle. A run takes well under a minute.
 
+A second job, `droplet`, builds `contrib/macos` on a macOS runner, which is how
+`build-app.sh`'s self-tests get run. `pytest` cannot reach any of that: the
+droplet is AppleScript. The job installs the package first, so the build takes
+its document extensions from `trichrome.RAW_EXTENSIONS` rather than the
+hardcoded fallback — the two drifting apart is the failure worth catching.
+
 Merging into `main` requires exactly one status check, `ci-ok`. That job does no
-testing of its own: it depends on the whole matrix and passes only when every
-version passed. The indirection is deliberate — branch protection matches checks
-by *name*, so requiring `test (3.9)` and friends directly would mean that
-editing the matrix silently wedges every pull request, waiting forever on a
-check that no longer reports under that name. Requiring `ci-ok` instead leaves
-the matrix free to change.
+testing of its own: it depends on the whole matrix and on `droplet`, and passes
+only when all of them passed. The indirection is deliberate — branch protection
+matches checks by *name*, so requiring `test (3.9)` and friends directly would
+mean that editing the matrix silently wedges every pull request, waiting forever
+on a check that no longer reports under that name. Requiring `ci-ok` instead
+leaves the matrix free to change.
 
 For the same reason `ci-ok` is marked `if: always()`. A skipped check never
 reports, so without it a failing matrix would hang pull requests rather than
 turning them red.
 
-If you do change the matrix, `ci-ok` needs no update. If you rename the `ci-ok`
-job itself, update the required check on `main` in the same breath or nothing
-will be mergeable.
+If you do change the matrix, `ci-ok` needs no update — but a wholly new job
+does need adding to its `needs`, or it will not gate anything. If you rename the
+`ci-ok` job itself, update the required check on `main` in the same breath or
+nothing will be mergeable.
