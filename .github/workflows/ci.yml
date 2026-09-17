@@ -19,9 +19,9 @@ jobs:
         python-version: ["3.9", "3.11", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -32,21 +32,43 @@ jobs:
 
       - run: pytest -q
 
+  # The Finder droplet, which pytest cannot reach: it is AppleScript. build-app.sh
+  # compiles it and self-tests the command builder, and the package is installed
+  # first so the script takes its document extensions from trichrome.RAW_EXTENSIONS
+  # rather than the hardcoded fallback — which is what catches the two drifting
+  # apart.
+  droplet:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Build the droplet and run its self-tests
+        run: contrib/macos/build-app.sh "$RUNNER_TEMP/Trichrome Merge.app"
+
   # The single required status check on main. Branch protection matches checks
   # by name, so requiring the matrix jobs directly ("test (3.9)" …) would wedge
   # every PR the moment the matrix changed: the old names stop reporting, and a
   # required check that never arrives blocks forever. Requiring only this job
   # keeps the matrix free to change.
   #
-  # if: always() is load-bearing. Without it this job is skipped when the matrix
-  # fails, a skipped required check never reports, and PRs hang instead of
-  # showing a red X.
+  # if: always() is load-bearing. Without it this job is skipped when something
+  # it needs fails, a skipped required check never reports, and PRs hang instead
+  # of showing a red X.
   ci-ok:
     if: always()
-    needs: test
+    needs: [test, droplet]
     runs-on: ubuntu-latest
     steps:
-      - name: Fail unless every matrix job succeeded
+      - name: Fail unless every job above succeeded
         run: |
-          echo "test result: ${{ needs.test.result }}"
+          echo "test:    ${{ needs.test.result }}"
+          echo "droplet: ${{ needs.droplet.result }}"
           test "${{ needs.test.result }}" = "success"
+          test "${{ needs.droplet.result }}" = "success"
