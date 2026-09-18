@@ -27,7 +27,9 @@ extensions=$(python3 -c \
 echo "Building $app"
 rm -rf "$app"
 mkdir -p "$(dirname "$app")"
-osacompile -o "$app" "$source_script"
+# -s makes it a STAY-OPEN applet, which is what gives it an idle handler: the
+# droplet gathers a selection that arrives in several deliveries before acting.
+osacompile -s -o "$app" "$source_script"
 
 # Set a key whether or not osacompile already wrote one.
 plist_set() {   # key type value...
@@ -86,17 +88,72 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 [ -x "$lsregister" ] && "$lsregister" -f "$app" || true
 touch "$app"
 
-# --- Self-test: the command builder, without needing a screen ------------- #
+# --- Self-tests: the logic, without needing a screen ---------------------- #
+scpt="$app/Contents/Resources/Scripts/main.scpt"
+fail=0
+
+check() {   # label expected actual
+    if [ "$3" != "$2" ]; then
+        echo "SELF-TEST FAILED: $1" >&2
+        echo "  got:      $3" >&2
+        echo "  expected: $2" >&2
+        fail=1
+    fi
+}
+
+# The command builder: quoting, including a path with a space, and a film ID
+# that would read as an option if it were not attached to its flag.
 built=$(osascript \
-    -e "set s to load script POSIX file \"$app/Contents/Resources/Scripts/main.scpt\"" \
-    -e 'tell s to buildCommand("/usr/bin/true", {"/a b/one.arw", "/two.arw"})')
-expected="'/usr/bin/true' merge '/a b/one.arw' '/two.arw' 2>&1"
-if [ "$built" != "$expected" ]; then
-    echo "SELF-TEST FAILED" >&2
-    echo "  built:    $built" >&2
-    echo "  expected: $expected" >&2
-    exit 1
-fi
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to buildCommand("/usr/bin/true", "S0123-10", "", {"/a b/one.arw", "/two.arw", "/three.arw"})')
+check "command quoting" \
+    "'/usr/bin/true' '--filmid=S0123-10' '/a b/one.arw' '/two.arw' '/three.arw' 2>&1" "$built"
+
+built=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to buildCommand("/usr/bin/true", "-it'"'"'s", "/out dir", {"/one.arw"})')
+check "film ID and output folder" \
+    "'/usr/bin/true' '--filmid=-it'\''s' '--out=/out dir' '/one.arw' 2>&1" "$built"
+
+# What the settings dialog refuses before it lets the merge run.
+problems=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to set a to settingsProblem("", false, "")' \
+    -e 'tell s to set b to settingsProblem("S0123-10", true, "")' \
+    -e 'tell s to set c to settingsProblem("S0123-10", false, "")' \
+    -e 'tell s to set d to settingsProblem("S0123-10", true, "/out")' \
+    -e '((a is not "") as text) & "/" & ((b is not "") as text) & "/" & ((c is "") as text) & "/" & ((d is "") as text)')
+check "blank film ID and missing folder are refused" \
+    "true/true/true/true" "$problems"
+
+selection=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to ((selectionProblem(1) is not "") as text) & "/" & ((selectionProblem(2) is not "") as text) & "/" & ((selectionProblem(3) is "") as text) & "/" & ((selectionProblem(4) is not "") as text) & "/" & ((selectionProblem(6) is not "") as text)')
+check "anything but three files is refused before the dialog" \
+    "true/true/true/true/true" "$selection"
+
+trim=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to trimmed("  S0123-10 " & tab & linefeed)')
+check "whitespace around a setting is trimmed" "S0123-10" "$trim"
+
+# The coalescing: two deliveries, one batch of three, and an empty accumulator
+# afterwards so the next selection starts clean.
+batch=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to absorbItems({"b", "c"})' \
+    -e 'tell s to absorbItems({"a"})' \
+    -e 'tell s to set taken to takeBatch()' \
+    -e 'tell s to ((count of taken) as text) & "/" & (absorbItems({}) as text)')
+check "split deliveries are gathered into one batch" "3/0" "$batch"
+
+# The one line of trichrome's output this parses.
+written=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to item 1 of writtenPathsFrom("S0123-10: …" & linefeed & linefeed & "wrote /a b/S0123-10.dng  (6024x4024, uint16)")')
+check "the written path is read out of the output" "/a b/S0123-10.dng" "$written"
+
+[ "$fail" -eq 0 ] || exit 1
 
 echo "Built and registered. Document types: $extensions"
-echo "Self-test passed."
+echo "Self-tests passed."

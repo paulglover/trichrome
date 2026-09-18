@@ -141,9 +141,9 @@ def test_frames_with_different_pedestals_do_not_tint_the_merge(tmp_path):
 def test_full_cli_run_writes_a_readable_dng_and_deletes_on_request(triplet,
                                                                   capsys):
     shoot, paths, expected = triplet
-    assert cli.main(["merge", str(shoot), "--delete-originals"]) == 0
+    assert cli.main(["-i", "S0123-10", *paths, "--delete-originals"]) == 0
 
-    out = str(shoot / "frame1_RGB.dng")
+    out = str(shoot / "S0123-10.dng")
     assert os.path.exists(out)
     data = dng.read_linear_dng(out)
     assert data.shape == (64, 96, 3) and data.dtype == np.uint16
@@ -162,9 +162,9 @@ def test_a_written_dng_opens_in_libraw_as_raw_with_the_merged_values(triplet):
     (camera-native colour, gamma 1, unity white balance, no auto-brighten) it
     must hand back exactly the merge that went in — proof that the file says
     what it holds, and that nothing in the container altered it."""
-    shoot, _paths, expected = triplet
-    assert cli.main(["merge", str(shoot)]) == 0
-    out = str(shoot / "frame1_RGB.dng")
+    shoot, paths, expected = triplet
+    assert cli.main(["-i", "S0123-10", *paths]) == 0
+    out = str(shoot / "S0123-10.dng")
 
     with rawpy.imread(out) as decoded:
         rgb = decoded.postprocess(output_color=rawpy.ColorSpace.raw,
@@ -188,9 +188,9 @@ def test_the_dng_survives_a_decoder_that_derives_its_own_white_balance(triplet):
     (1, 1, 1) made the derived multipliers (1.65, 1.34, 1.00): the merge arrived
     two thirds of a stop hot in red, with red and green clipped. Both routes must
     agree, and agree on unity."""
-    shoot, _paths, expected = triplet
-    assert cli.main(["merge", str(shoot)]) == 0
-    out = str(shoot / "frame1_RGB.dng")
+    shoot, paths, expected = triplet
+    assert cli.main(["-i", "S0123-10", *paths]) == 0
+    out = str(shoot / "S0123-10.dng")
 
     with rawpy.imread(out) as decoded:
         as_shot = np.array(decoded.camera_whitebalance[:3])
@@ -211,19 +211,19 @@ def test_the_dng_survives_a_decoder_that_derives_its_own_white_balance(triplet):
         assert abs(got - want) <= want * 1e-3, f"channel {ch}: {got} vs {want}"
 
 
-def test_a_dng_run_over_a_folder_twice_does_not_eat_its_own_output(triplet):
+def test_a_merge_cannot_be_fed_back_in_as_a_source(triplet):
     """The .dng-is-also-a-RAW-extension hazard, end to end and with the
-    destructive flag on: the second run must find no inputs at all, rather than
-    merging the first run's output and deleting it. Sharper now that every
-    output is a DNG: the tool writes its own input format every time."""
+    destructive flag on: naming the first run's output as a frame of a second
+    run must be refused before anything is read, rather than merging the merge
+    and deleting it."""
     shoot, paths, _expected = triplet
-    assert cli.main(["merge", str(shoot), "--delete-originals"]) == 0
-    merged = str(shoot / "frame1_RGB.dng")
-    assert os.path.exists(merged) and not any(os.path.exists(p) for p in paths)
+    assert cli.main(["-i", "S0123-10", *paths]) == 0
+    merged = str(shoot / "S0123-10.dng")
 
-    assert cli.main(["merge", str(shoot)]) == 2
-    assert os.path.exists(merged)
-    assert not os.path.exists(str(shoot / "frame1_RGB_RGB.dng"))
+    assert cli.main(["-i", "S0123-11", paths[0], paths[1], merged,
+                     "--delete-originals"]) == 2
+    assert os.path.exists(merged) and all(os.path.exists(p) for p in paths)
+    assert not os.path.exists(str(shoot / "S0123-11.dng"))
 
 
 def test_a_merged_dng_carries_its_first_frame_s_camera_metadata(triplet, tmp_path):
@@ -242,10 +242,10 @@ def test_a_merged_dng_carries_its_first_frame_s_camera_metadata(triplet, tmp_pat
             fx.write_tiff_source(tmp_path / "other.arw",
                                  ifd0=[(271, fx._ascii("NOT THIS BODY"))])))
 
-    jobs = bake.plan_jobs(paths, out_dir=str(tmp_path / "out"))
-    summary = bake.run_jobs(jobs)
-    assert [r.warning for r in summary.written] == [None]
-    out = summary.written[0].job.output
+    job = bake.plan_job(paths, "S0123-10", out_dir=str(tmp_path / "out"))
+    result = bake.run_job(job)
+    assert result.ok and result.warning is None
+    out = job.output
 
     with tifffile.TiffFile(out) as tf:
         tags = {t.code: t.value for t in tf.pages[0].tags.values()}

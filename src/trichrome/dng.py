@@ -118,6 +118,13 @@ IFD is copied in whole — the tags that describe the exposure, not the
 tags that describe the source's pixels. See exif.py for what is carried, what is
 deliberately not, and why the camera tags do not disturb `UniqueCameraModel`.
 
+The film ID
+-----------
+`identifier=` is written as the file's only XMP: a packet stating it as
+`dc:identifier`, so a catalogue that has renamed or moved the file can still say
+which film it is. The sources' own XMP is not carried (exif.py says why), so
+there is nothing for this to be merged with.
+
 It is best-effort by design. A source whose metadata cannot be read still gets
 merged and still gets written; the writer returns a warning instead of raising,
 because the pixels are the part that cannot be reconstructed and no metadata
@@ -141,6 +148,7 @@ follow the SubIFD.
 """
 import os
 from typing import List, Optional, Tuple
+from xml.sax.saxutils import escape as xml_escape
 
 import numpy as np
 import tifffile
@@ -159,6 +167,7 @@ OUTPUT_EXTENSION = ".dng"
 FREECCR_MERGE_MARKER = "FreeCCR:3-way-RGB-merge-linear-v1"
 
 # DNG tag numbers used below, named so the extratags lists stay readable.
+_TAG_XMP = 700
 _TAG_DNG_VERSION = 50706
 _TAG_DNG_BACKWARD_VERSION = 50707
 _TAG_UNIQUE_CAMERA_MODEL = 50708
@@ -271,16 +280,34 @@ def is_merge_dng(path) -> bool:
     merge marker in its Software tag.
 
     It matters: `.dng` is itself a supported RAW extension, so without this check
-    a merged DNG left beside its sources would be picked up as a merge INPUT on
-    the next run."""
+    a merged DNG could be taken as a merge INPUT — and, with --delete-originals,
+    deleted as one."""
     if os.path.splitext(str(path))[1].lower() != OUTPUT_EXTENSION:
         return False
     return carries_merge_marker(path)
 
 
+def xmp_packet(identifier: str) -> bytes:
+    """A minimal XMP packet stating `identifier` as dc:identifier — the film
+    ID the merge was made under."""
+    return (
+        '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+        ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+        '  <rdf:Description rdf:about=""'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+        f'   <dc:identifier>{xml_escape(identifier)}</dc:identifier>\n'
+        '  </rdf:Description>\n'
+        ' </rdf:RDF>\n'
+        '</x:xmpmeta>\n'
+        '<?xpacket end="w"?>'
+    ).encode("utf-8")
+
+
 def write_linear_dng(path: str, merged: np.ndarray,
                      version: Optional[str] = None,
-                     source: Optional[str] = None) -> Optional[str]:
+                     source: Optional[str] = None,
+                     identifier: Optional[str] = None) -> Optional[str]:
     """Write `merged` (H, W, 3 uint16 linear RGB) to `path` as an uncompressed
     linear DNG. Raises IOError on failure.
 
@@ -288,6 +315,8 @@ def write_linear_dng(path: str, merged: np.ndarray,
     file is metadata saying what
     they are: linear, black at 0, white at 65535, neutral at (1, 1, 1), toned by
     nothing and blacked by nothing — and, from `source`, what took them.
+
+    `identifier`, when given, is the film ID, written as XMP dc:identifier.
 
     `source` is the triplet's first frame, whose EXIF is copied in (exif.py).
     Returns None when that succeeded or was not asked for, and a one-line
@@ -312,6 +341,9 @@ def write_linear_dng(path: str, merged: np.ndarray,
          IDENTITY_TONE_CURVE, True),
         (_TAG_DEFAULT_BLACK_RENDER, 'I', 1, _BLACK_RENDER_NONE, True),
     ]
+    if identifier:
+        packet = xmp_packet(identifier)
+        ifd0_tags.append((_TAG_XMP, 'B', len(packet), packet, True))
     raw_tags = [
         # One black/white level per sample, with a 1x1 repeat pattern: the merge
         # has already subtracted the sensors' pedestals and normalised to the

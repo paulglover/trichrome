@@ -3,16 +3,16 @@
 [![CI](https://github.com/paulglover/trichrome/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paulglover/trichrome/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/paulglover/trichrome?label=release)](https://github.com/paulglover/trichrome/releases)
 
-Merge red/green/blue-light RAW triplets into 16-bit **linear DNGs**, then
-(optionally) delete the source RAWs.
+Merge a red/green/blue-light RAW triplet into one 16-bit **linear DNG**, named
+after its film ID, then (optionally) delete the source RAWs.
 
 You shoot one static scene three times — once under a pure red light, once
-green, once blue. This tool takes every consecutive triplet of RAWs and builds
-one full-colour image from them by keeping each frame's **own** colour channel
+green, once blue. This tool takes those three RAWs and builds one full-colour
+image from them by keeping each frame's **own** colour channel
 and throwing the other two away. The result is the raw channel combination and
 nothing else, written as a linear DNG that your converter opens through its
-**RAW** pipeline and that carries the shoot's own camera metadata: date, body,
-lens, exposure.
+**RAW** pipeline and that carries the shoot's own camera metadata — date, body,
+lens, exposure — along with the film ID it was merged under.
 
 Extracted from [FreeCCR](https://github.com/paulglover/FreeCCR)'s 3-way RGB
 merge, stripped of the GUI, catalog, crop and colour pipeline. Standalone — it
@@ -29,40 +29,39 @@ Python 3.9+.
 ## Use
 
 ```bash
-trichrome list ./shoot                        # show the triplet grouping first
-trichrome merge ./shoot                       # write DNGs, keep the RAWs
-trichrome merge ./shoot --out ./merged        # write them somewhere else
-trichrome merge ./shoot --dry-run             # plan only, decode nothing
-trichrome merge ./shoot --delete-originals    # destructive; no prompt
+trichrome -i S0123-10 img001.arw img002.arw img003.arw           # -> S0123-10.dng
+trichrome -i S0123-10 img00[1-3].arw --out ./merged              # write it somewhere else
+trichrome -i S0123-10 img00[1-3].arw --dry-run                   # plan only, decode nothing
+trichrome -i S0123-10 img00[1-3].arw --delete-originals          # destructive; no prompt
 ```
 
 ```
-$ trichrome merge ./shoot
-2 triplet(s) · light order RGB · demosaic (full resolution) · linear DNG
-[1/2] img001.arw + img002.arw + img003.arw  ->  img001_RGB.dng
-[2/2] img004.arw + img005.arw + img006.arw  ->  img004_RGB.dng
+$ trichrome -i S0123-10 img001.arw img002.arw img003.arw
+S0123-10: light order RGB · demosaic (full resolution) · linear DNG
+  img001.arw + img002.arw + img003.arw
+  -> /shoot/S0123-10.dng
 
-wrote /shoot/img001_RGB.dng  (6024x4024, uint16)
-wrote /shoot/img004_RGB.dng  (6024x4024, uint16)
-
-2 merged, 0 failed
+wrote /shoot/S0123-10.dng  (6024x4024, uint16)
 ```
+
+Every run takes **exactly three RAW files** — the frames of one shot, one per
+light — and writes **one** DNG. Folders are not accepted.
 
 ### Options
 
 | Flag | Meaning |
 | --- | --- |
-| `-r, --recursive` | descend into subfolders of an input folder |
-| `-o, --out DIR` | write the merged files here instead of beside each triplet's first frame |
-| `--suffix S` | output name is `<first frame><S>.dng` (default `_RGB`) |
-| `--order RGB` | which light each frame of a triplet was shot under, in filename order — `BGR` if you shot blue first |
+| `-i, --filmid FILMID` | **required.** The merged file is `FILMID.dng`, and the ID is written into its XMP `dc:identifier` |
+| `-o, --out DIR` | write the merged file here instead of beside the first frame |
+| `--order RGB` | which light each frame was shot under, in filename order — `BGR` if you shot blue first |
 | `--demosaic` / `--photosite` | see *Two ways to extract a channel* below (default `--demosaic`) |
-| `--delete-originals` | permanently delete each triplet's RAWs once its merged file verifies |
+| `--delete-originals` | permanently delete the three RAWs once the merged file verifies |
 | `-n, --dry-run` | show what would happen; decode, write and delete nothing |
 
-Files are ordered by **filename** (directory ignored, case-insensitive) and taken
-three at a time. The batch must be a multiple of three and every file must be a
-supported RAW, or nothing runs.
+The three files are ordered by **filename** (directory ignored,
+case-insensitive), so the order they are given in does not matter. Every file
+must be a supported RAW, and the output must not already exist, or nothing runs.
+The film ID is a file name, not a path: it cannot be blank or contain a `/`.
 
 Supported RAW: `.cr3 .cr2 .nef .arw .dng .rw2 .orf .raf .srw .pef .3fr`.
 
@@ -93,8 +92,8 @@ grayscale frame *is* that frame's channel, at full resolution. Both modes decode
 identically. A monochrome sensor is in fact the ideal trichrome sensor — no
 wasted photosites, full resolution, zero crosstalk by construction.
 
-X-Trans and 4-colour (CYGM/RGBE) sensors are rejected. All three frames of a
-triplet must be the same sensor type.
+X-Trans and 4-colour (CYGM/RGBE) sensors are rejected. All three frames must
+be the same sensor type.
 
 ## The output file
 
@@ -180,9 +179,8 @@ body and lens, and a file with none of that lands outside every collection it
 belongs to. That information exists only in the source RAWs — and
 `--delete-originals` is what destroys it.
 
-So a DNG carries it. From the triplet's **first** frame (the one the merged file
-is already named after, and the one whose name goes into `OriginalRawFileName`),
-trichrome copies:
+So a DNG carries it. From the triplet's **first** frame in filename order (the
+one whose name goes into `OriginalRawFileName`), trichrome copies:
 
 * the whole **EXIF IFD**, tag for tag — shutter, aperture, ISO, metering,
   focal length, lens, the date and time, and whatever else the body recorded;
@@ -221,6 +219,7 @@ A few things are deliberately **not** carried:
   (above) and the rest stays behind.
 * **XMP.** It records *edits* — crop, white balance, develop settings keyed to
   the source's raw pipeline — which describe a different image than the merge.
+  The merged file's only XMP is the film ID, as `dc:identifier`.
 * **`PixelXDimension` / `PixelYDimension`**, which are restated for the merged
   image rather than copied; a `--photosite` merge is half the source's size.
 * **`ColorSpace`**, restated as `Uncalibrated`. The source's sRGB is true of its
@@ -246,7 +245,7 @@ If a source's metadata cannot be read, the merge is still written and verified
 and the run says so:
 
 ```
-WARNING img001_RGB.dng: no camera metadata copied from img001.arw: …
+WARNING S0123-10.dng: no camera metadata copied from img001.arw: …
 ```
 
 The merge is the part that cannot be reconstructed, and no metadata problem is
@@ -262,10 +261,9 @@ whatever the image. If that matters, Adobe DNG Converter will losslessly
 recompress one, typically to around half.
 
 Because `.dng` is itself a supported RAW extension, the tool writes its own
-input format, and a merged file left beside its sources would otherwise be
-picked up as an *input* on the next run. It isn't: folder scans skip files
-carrying the merge marker, so running the same command twice over a folder is
-safe — the second run simply finds nothing to do.
+input format, so a merged file could be named as an *input* by mistake. It is
+refused: a file carrying the merge marker is not a source frame, and with
+`--delete-originals` it would otherwise be deleted as one.
 
 ## Deleting the originals
 
@@ -275,12 +273,10 @@ safe — the second run simply finds nothing to do.
   as a valid uint16 RGB image **of the expected size** (for a DNG that means the
   LinearRaw image itself, not the thumbnail — a file whose preview survived and
   whose data did not must fail).
-* If a triplet fails, none of its sources are deleted — and neither are those
-  same files if another triplet referenced them. A frame's only copy is never
-  orphaned.
-* A failed triplet leaves no partial file behind.
-* Interrupting deletes nothing and removes the files written so far.
-* An existing file is **never** overwritten; a numeric suffix is added instead.
+* If the merge fails, none of the sources are deleted, and it leaves no partial
+  file behind.
+* An existing file is **never** overwritten: if `FILMID.dng` is already there,
+  nothing runs.
 * There is no confirmation prompt: passing the flag is the confirmation. Use
   `--dry-run` first to see exactly which files a run would delete.
 
@@ -293,33 +289,37 @@ afterwards.
 
 [`contrib/macos/`](contrib/macos/) has an AppleScript droplet and a build script
 that turn this tool into an app you can reach from digiKam's (or Finder's) **Open
-With** menu: select the frames of a shoot and open them with it.
+With** menu: select the three frames of a shot, open them with it, and type
+the film ID.
 
 ```bash
 cd contrib/macos && ./build-app.sh      # -> ~/Applications/Trichrome Merge.app
 ```
 
-Selection order does not matter — trichrome sorts by filename before grouping.
-See [contrib/macos/README.md](contrib/macos/README.md) for the properties it
+It refuses any selection that is not exactly three files, and remembers an
+optional output folder between runs. Selection order does not matter —
+trichrome sorts by filename. See [contrib/macos/README.md](contrib/macos/README.md) for the properties it
 takes and why *Open With* rather than digiKam's batch queue.
 
 ## As a library
 
 ```python
-from trichrome import collect_raw_files, plan_jobs, run_jobs
+from trichrome import plan_job, run_job
 
-jobs = plan_jobs(collect_raw_files(["./shoot"]), out_dir="./merged")
-summary = run_jobs(jobs, demosaic=True, delete_originals=False)
-print(len(summary.written), "merged;", len(summary.failures), "failed")
+job = plan_job(["img001.arw", "img002.arw", "img003.arw"], "S0123-10",
+               out_dir="./merged")
+result = run_job(job, demosaic=True, delete_originals=False)
+print(result.job.output if result.ok else result.error)
 ```
 
-`plan_jobs` settles the output path — including the `.dng` extension and any
-numeric suffix needed to avoid an existing file — and `run_jobs` writes what the
-plan says.
+`plan_job` validates the three files and the film ID and settles the output
+path, raising `ValueError` with a message meant for a person when they cannot be
+merged; `run_job` writes what the plan says and never raises.
 
-`write_linear_dng(path, merged, source=first_raw)` is what carries the camera
-metadata over, and returns `None` or a one-line warning; `run_jobs` does this
-for you and puts the warning on the `JobResult`. `read_source_metadata(path)`
+`write_linear_dng(path, merged, source=first_raw, identifier=film_id)` is what
+carries the camera metadata over and writes the film ID, and returns `None` or a
+one-line warning; `run_job` does this for you and puts the warning on the
+`JobResult`. `read_source_metadata(path)`
 reads a RAW's EXIF on its own.
 
 `merge_raw_channels(sources, demosaic=True, light_order="RGB")` returns
