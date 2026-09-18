@@ -1,120 +1,86 @@
 """
 Command-line interface.
 
-    trichrome merge ./shoot                     # write DNGs, keep the RAWs
-    trichrome merge ./shoot --out ./merged
-    trichrome merge ./shoot --delete-originals  # destructive; no prompt
-    trichrome merge ./shoot --dry-run           # show the plan only
-    trichrome list ./shoot                      # show the triplet grouping
+    trichrome -i S0123-10 img001.arw img002.arw img003.arw   # -> S0123-10.dng
+    trichrome -i S0123-10 img00[1-3].arw --out ./merged
+    trichrome -i S0123-10 img00[1-3].arw --delete-originals  # destructive; no prompt
+    trichrome -i S0123-10 img00[1-3].arw --dry-run           # show the plan only
+
+Exactly three RAW files, the frames of one shot, one per light. They are merged
+into one linear DNG named FILMID.dng, written beside the first frame unless
+`--out` says otherwise, with the film ID also stated as its XMP dc:identifier.
+Selection order does not matter: the frames are taken in filename order.
 """
 import argparse
 import os
 import sys
-from typing import List
 
 from . import __version__
 from . import bake as bake_mod
 from . import merge as merge_mod
 
 
-def _fmt_triplet(job: bake_mod.Job) -> str:
-    return "  " + " + ".join(os.path.basename(s) for s in job.sources)
-
-
-def _plan(args) -> List[bake_mod.Job]:
-    paths = bake_mod.collect_raw_files(args.inputs, recursive=args.recursive)
-    if not paths:
-        raise ValueError("No RAW files found. Supported: "
-                         + ", ".join(sorted(merge_mod.RAW_EXTENSIONS)))
-    return bake_mod.plan_jobs(paths, out_dir=args.out, suffix=args.suffix)
-
-
-def cmd_list(args) -> int:
-    jobs = _plan(args)
-    print(f"{len(jobs)} triplet(s), light order {args.order.upper()}:")
-    for job in jobs:
-        print(f"{_fmt_triplet(job)}  ->  {job.output}")
-    return 0
-
-
 def cmd_merge(args) -> int:
-    jobs = _plan(args)
+    job = bake_mod.plan_job(args.inputs, args.film_id, out_dir=args.out)
     mode = "demosaic (full resolution)" if args.demosaic else \
            "single photosite (half resolution)"
-    print(f"{len(jobs)} triplet(s) · light order {args.order.upper()} · {mode}"
+    print(f"{job.film_id}: light order {args.order.upper()} · {mode}"
           f" · linear DNG")
+    print("  " + " + ".join(os.path.basename(s) for s in job.sources))
+    print(f"  -> {job.output}", flush=True)
 
-    def progress(i, total, job):
-        print(f"[{i + 1}/{total}] {_fmt_triplet(job).strip()}  ->  "
-              f"{os.path.basename(job.output)}", flush=True)
-
-    summary = bake_mod.run_jobs(
-        jobs, demosaic=args.demosaic, light_order=args.order,
-        delete_originals=args.delete_originals, dry_run=args.dry_run,
-        progress_cb=progress)
+    r = bake_mod.run_job(
+        job, demosaic=args.demosaic, light_order=args.order,
+        delete_originals=args.delete_originals, dry_run=args.dry_run)
 
     if args.dry_run:
-        print(f"\nDry run — nothing written. {len(jobs)} DNG(s) would be "
-              "created"
-              + (f", {len(jobs) * 3} RAW(s) deleted."
-                 if args.delete_originals else "."))
+        print("\nDry run — nothing written"
+              + (", nothing deleted." if args.delete_originals else "."))
         return 0
 
-    print()
-    for r in summary.written:
+    if r.ok:
         h, w = r.size or (0, 0)
-        print(f"wrote {r.job.output}  ({w}x{h}, uint16)")
+        print(f"\nwrote {job.output}  ({w}x{h}, uint16)")
     # The file is written and verified; something about it is worth knowing —
     # today, a DNG whose source's camera metadata could not be read. Said before
     # the deletion count, because that is the decision it bears on.
-    for r in summary.written:
-        if r.warning:
-            print(f"WARNING {r.job.name}: {r.warning}", file=sys.stderr)
-    for r in summary.failures:
-        print(f"FAILED {r.job.name}: {r.error}", file=sys.stderr)
-    for path, reason in summary.delete_errors:
+    if r.warning:
+        print(f"WARNING {job.name}: {r.warning}", file=sys.stderr)
+    if r.error:
+        print(f"FAILED {job.film_id}: {r.error}", file=sys.stderr)
+    for path, reason in r.delete_errors:
         print(f"NOT DELETED {os.path.basename(path)}: {reason}", file=sys.stderr)
 
-    if summary.deleted:
-        print(f"deleted {len(summary.deleted)} source RAW(s)")
+    if r.deleted:
+        print(f"deleted {len(r.deleted)} source RAW(s)")
     elif args.delete_originals:
-        print("deleted nothing" +
-              (" (no triplet succeeded)" if not summary.written else ""))
-    print(f"\n{len(summary.written)} merged, {len(summary.failures)} failed")
-    return 1 if (summary.failures or summary.delete_errors) else 0
+        print("deleted nothing" + (" (the merge failed)" if not r.ok else ""))
+    return 1 if (r.error or r.delete_errors) else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="trichrome",
-        description="Merge red/green/blue-light RAW triplets into 16-bit "
-                    "linear DNGs.",
+        description="Merge a red/green/blue-light RAW triplet into one 16-bit "
+                    "linear DNG.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__)
     p.add_argument("--version", action="version",
                    version=f"trichrome {__version__}")
-    sub = p.add_subparsers(dest="command", required=True)
-
-    def common(sp):
-        sp.add_argument("inputs", nargs="+",
-                        help="RAW files, and/or folders of RAW files")
-        sp.add_argument("-r", "--recursive", action="store_true",
-                        help="descend into subfolders of any input folder")
-        sp.add_argument("-o", "--out", metavar="DIR",
-                        help="write the merged files here (default: beside each "
-                             "triplet's first frame)")
-        sp.add_argument("--suffix", default=bake_mod.DEFAULT_NAME_SUFFIX,
-                        help="appended to the first frame's name, before the "
-                             ".dng extension "
-                             f"(default: {bake_mod.DEFAULT_NAME_SUFFIX})")
-        sp.add_argument("--order", default=merge_mod.DEFAULT_LIGHT_ORDER,
-                        metavar="RGB",
-                        help="which light each frame of a triplet was shot "
-                             "under, in filename order (default: RGB)")
-
-    sp = sub.add_parser("merge", help="merge triplets into linear DNGs")
-    common(sp)
-    g = sp.add_mutually_exclusive_group()
+    p.add_argument("inputs", nargs="+", metavar="RAW",
+                   help="the three RAW frames of one shot, one per light")
+    p.add_argument("-i", "--filmid", "--film-id", dest="film_id",
+                   required=True, metavar="FILMID",
+                   help="the film ID: the merged file is FILMID.dng, and the "
+                        "ID is written into its XMP dc:identifier")
+    p.add_argument("-o", "--out", metavar="DIR",
+                   help="write the merged file here (default: beside the "
+                        "first frame)")
+    p.add_argument("--order", default=merge_mod.DEFAULT_LIGHT_ORDER,
+                   metavar="RGB",
+                   help="which light each frame was shot under, in filename "
+                        "order (default: RGB)")
+    g = p.add_mutually_exclusive_group()
     g.add_argument("--demosaic", dest="demosaic", action="store_true",
                    default=True,
                    help="full-resolution linear demosaic of each frame's own "
@@ -122,17 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--photosite", dest="demosaic", action="store_false",
                    help="no demosaic at all: bare Bayer photosites, half "
                         "resolution")
-    sp.add_argument("--delete-originals", action="store_true",
-                    help="PERMANENTLY delete each triplet's source RAWs after "
-                         "its merged file is written and verified")
-    sp.add_argument("-n", "--dry-run", action="store_true",
-                    help="show what would happen; decode, write and delete "
-                         "nothing")
-    sp.set_defaults(func=cmd_merge)
-
-    sp = sub.add_parser("list", help="show how files group into triplets")
-    common(sp)
-    sp.set_defaults(func=cmd_list)
+    p.add_argument("--delete-originals", action="store_true",
+                   help="PERMANENTLY delete the three source RAWs after the "
+                        "merged file is written and verified")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="show what would happen; decode, write and delete "
+                        "nothing")
+    p.set_defaults(func=cmd_merge)
     return p
 
 

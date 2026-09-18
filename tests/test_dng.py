@@ -1,7 +1,7 @@
 """
 Tests for the linear DNG output: the file's structure, the colour metadata it is
 forced to carry, the verification that guards deletion, and the plumbing through
-plan_jobs/run_jobs and the CLI.
+plan_job/run_job and the CLI.
 
 The DNG's whole reason for existing is that a converter opens it through the RAW
 pipeline, so the claims that matter here are structural — LinearRaw in a SubIFD,
@@ -325,91 +325,65 @@ def test_an_unmarked_dng_and_a_non_dng_are_not(tmp_path):
     assert not dng.is_merge_dng(marked)
 
 
-def test_a_merged_dng_left_beside_its_sources_is_not_picked_up_as_an_input(
-        tmp_path):
-    """.dng is a supported RAW extension, so without the exclusion a second run
-    over the same folder would try to merge its own output — and, with
-    --delete-originals, would then be deleting merges."""
-    sources = raws(tmp_path, 3, ext=".dng")
-    dng.write_linear_dng(str(tmp_path / "img001_RGB.dng"), sample())
-    found = bake.collect_raw_files([str(tmp_path)])
-    assert sorted(os.path.basename(p) for p in found) == \
-        ["img001.dng", "img002.dng", "img003.dng"]
-    assert len(sources) == 3
+def test_a_merged_dng_is_refused_as_a_source_frame(tmp_path):
+    """.dng is a supported RAW extension, so a merge named among the inputs
+    would otherwise be merged again — and, with --delete-originals, deleted."""
+    sources = raws(tmp_path, 2, ext=".dng")
+    merged = str(tmp_path / "img003.dng")
+    dng.write_linear_dng(merged, sample())
+    with pytest.raises(ValueError, match="already a trichrome merge"):
+        bake.plan_job(sources + [merged], "S0123-10")
 
 
-def test_the_exclusion_also_applies_to_a_recursive_scan(tmp_path):
-    raws(tmp_path, 3, ext=".dng", folder="shoot")
-    dng.write_linear_dng(str(tmp_path / "shoot" / "img001_RGB.dng"), sample())
-    found = bake.collect_raw_files([str(tmp_path)], recursive=True)
-    assert len(found) == 3
+# --------------------------------------------------------------------------- #
+# The film ID, as XMP
+# --------------------------------------------------------------------------- #
+def test_the_identifier_is_written_as_the_file_s_only_xmp(tmp_path):
+    out = str(tmp_path / "m.dng")
+    dng.write_linear_dng(out, sample(), identifier="S0123-10")
+    with tifffile.TiffFile(out) as tf:
+        xmp = bytes(tf.pages[0].tags[700].value).decode("utf-8")
+    assert xmp.count("<dc:identifier>") == 1
+    assert "<dc:identifier>S0123-10</dc:identifier>" in xmp
+    dng.verify_linear_dng(out)
 
 
-def test_an_explicitly_named_merge_output_is_still_taken_as_given(tmp_path):
-    """Naming a file is an instruction; only directory scans get filtered."""
+def test_an_identifier_is_escaped_as_xml():
+    assert b"<dc:identifier>A&amp;B&lt;1&gt;</dc:identifier>" in \
+        dng.xmp_packet("A&B<1>")
+
+
+def test_no_identifier_writes_no_xmp(tmp_path):
     out = str(tmp_path / "m.dng")
     dng.write_linear_dng(out, sample())
-    assert bake.collect_raw_files([out]) == [out]
+    with tifffile.TiffFile(out) as tf:
+        assert 700 not in tf.pages[0].tags
 
 
 # --------------------------------------------------------------------------- #
-# Plumbing: plan_jobs, run_jobs, the CLI
+# Plumbing: plan_job, run_job, the CLI
 # --------------------------------------------------------------------------- #
-def test_planning_names_every_output_dng(tmp_path):
-    jobs = bake.plan_jobs(raws(tmp_path, 6))
-    assert [os.path.basename(j.output) for j in jobs] == \
-        ["img001_RGB.dng", "img004_RGB.dng"]
-
-
-def test_planning_never_overwrites_an_existing_dng(tmp_path):
-    files = raws(tmp_path, 3)
-    (tmp_path / "img001_RGB.dng").write_bytes(b"already here")
-    jobs = bake.plan_jobs(files)
-    assert os.path.basename(jobs[0].output) == "img001_RGB_2.dng"
-
-
-def test_running_a_plan_writes_verified_dngs(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    summary = bake.run_jobs(jobs)
-    assert len(summary.written) == 1 and not summary.failures
-    assert summary.written[0].size == (6, 8)
-    assert np.array_equal(dng.read_linear_dng(jobs[0].output)[0, 0],
+def test_running_a_plan_writes_a_verified_dng(tmp_path, fake_decode):
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10")
+    result = bake.run_job(job)
+    assert result.ok and result.size == (6, 8)
+    assert np.array_equal(dng.read_linear_dng(job.output)[0, 0],
                           [1000, 2000, 3000])
 
 
 def test_deleting_originals_leaves_a_verified_dng_behind(tmp_path, fake_decode):
     files = raws(tmp_path, 3)
-    jobs = bake.plan_jobs(files)
-    summary = bake.run_jobs(jobs, delete_originals=True)
-    assert len(summary.deleted) == 3
+    job = bake.plan_job(files, "S0123-10")
+    result = bake.run_job(job, delete_originals=True)
+    assert len(result.deleted) == 3
     assert not any(os.path.exists(f) for f in files)
-    dng.verify_linear_dng(jobs[0].output)
-
-
-def test_a_failed_job_leaves_no_partial_file_and_no_deletions(tmp_path,
-                                                              fake_decode):
-    files = raws(tmp_path, 3)
-    fake_decode.boom = "img002"
-    jobs = bake.plan_jobs(files)
-    summary = bake.run_jobs(jobs, delete_originals=True)
-    assert len(summary.failures) == 1 and not summary.deleted
-    assert not os.path.exists(jobs[0].output)
-    assert all(os.path.exists(f) for f in files)
+    dng.verify_linear_dng(job.output)
 
 
 def test_cli_writes_a_dng_and_says_so(tmp_path, capsys, fake_decode):
-    raws(tmp_path, 3)
-    assert cli.main(["merge", str(tmp_path)]) == 0
+    files = raws(tmp_path, 3)
+    assert cli.main(["-i", "S0123-10", *files]) == 0
     out = capsys.readouterr().out
     assert "linear DNG" in out
-    assert dng.is_merge_dng(str(tmp_path / "img001_RGB.dng"))
+    assert dng.is_merge_dng(str(tmp_path / "S0123-10.dng"))
 
-
-def test_cli_list_and_dry_run_name_the_dng_they_would_write(tmp_path, capsys):
-    raws(tmp_path, 3)
-    assert cli.main(["list", str(tmp_path)]) == 0
-    assert "img001_RGB.dng" in capsys.readouterr().out
-    assert cli.main(["merge", str(tmp_path), "-n"]) == 0
-    out = capsys.readouterr().out
-    assert "1 DNG(s) would be created" in out
-    assert not os.path.exists(str(tmp_path / "img001_RGB.dng"))

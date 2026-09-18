@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trichrome"
-version = "0.4.1"
-description = "Merge red/green/blue-light RAW triplets into 16-bit linear DNGs"
+version = "0.5.0"
+description = "Merge a red/green/blue-light RAW triplet into one 16-bit linear DNG"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

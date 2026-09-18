@@ -412,22 +412,22 @@ def test_a_failed_copy_is_reported_by_the_job_and_printed_by_the_cli(
         tmp_path, fake_decode, capsys):
     # test_bake's raws() are placeholders with no metadata in them at all, which
     # is exactly the case that must warn rather than fail.
-    raws(tmp_path, 3)
-    assert cli.main(["merge", str(tmp_path)]) == 0
+    files = raws(tmp_path, 3)
+    assert cli.main(["-i", "S0123-10", *files]) == 0
     out, err = capsys.readouterr()
-    assert "1 merged, 0 failed" in out
-    assert "WARNING img001_RGB.dng" in err and "img001.arw" in err
+    assert "wrote " in out
+    assert "WARNING S0123-10.dng" in err and "img001.arw" in err
 
 
 def test_a_copied_job_warns_about_nothing(tmp_path, fake_decode, capsys):
-    for i in (1, 2, 3):
-        fx.write_tiff_source(tmp_path / f"img{i:03d}.arw")
-    assert cli.main(["merge", str(tmp_path)]) == 0
+    files = [str(tmp_path / f"img{i:03d}.arw") for i in (1, 2, 3)]
+    for f in files:
+        fx.write_tiff_source(f)
+    assert cli.main(["-i", "S0123-10", *files]) == 0
     assert "WARNING" not in capsys.readouterr().err
-    results = bake.run_jobs(bake.plan_jobs(
-        [str(tmp_path / f"img{i:03d}.arw") for i in (1, 2, 3)],
-        out_dir=str(tmp_path / "again")))
-    assert [r.warning for r in results.written] == [None]
+    result = bake.run_job(bake.plan_job(files, "S0123-10",
+                                        out_dir=str(tmp_path / "again")))
+    assert result.ok and result.warning is None
 
 
 # --------------------------------------------------------------------------- #

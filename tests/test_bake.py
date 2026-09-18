@@ -3,8 +3,7 @@ Tests for planning, the written file and the destructive delete-originals path.
 
 The RAW decode is monkeypatched (no real trichrome triplet is needed), so these
 cover exactly what the safety rules promise: verify before delete, never delete
-a failed triplet's sources, never orphan a shared source, cancel cleanly, and
-never overwrite an existing file.
+a failed merge's sources, and never overwrite an existing file.
 """
 import os
 
@@ -57,167 +56,151 @@ def raws(tmp_path, n, ext=".arw", folder=""):
 
 
 # --------------------------------------------------------------------------- #
-# collect_raw_files
+# plan_job
 # --------------------------------------------------------------------------- #
-def test_collect_takes_raws_from_a_folder_and_skips_other_files(tmp_path):
-    raws(tmp_path, 3)
-    (tmp_path / "notes.txt").write_text("hi")
-    (tmp_path / "preview.jpg").write_bytes(b"x")
-    found = bake.collect_raw_files([str(tmp_path)])
-    assert len(found) == 3
-    assert all(p.endswith(".arw") for p in found)
+def test_plan_orders_by_filename_and_names_after_the_film_id(tmp_path):
+    files = raws(tmp_path, 3)
+    job = bake.plan_job(list(reversed(files)), "S0123-10")
+    assert [os.path.basename(s) for s in job.sources] == \
+        ["img001.arw", "img002.arw", "img003.arw"]
+    assert job.output == str(tmp_path / "S0123-10.dng")
+    assert job.film_id == "S0123-10"
 
 
-def test_collect_keeps_an_explicitly_named_non_raw_so_validation_reports_it(tmp_path):
-    raws(tmp_path, 2)
+@pytest.mark.parametrize("n", [1, 2, 4, 6])
+def test_plan_rejects_anything_but_exactly_three_files(tmp_path, n):
+    with pytest.raises(ValueError, match="exactly 3"):
+        bake.plan_job(raws(tmp_path, n), "S0123-10")
+
+
+def test_plan_rejects_a_folder(tmp_path):
+    raws(tmp_path, 3, folder="shoot")
+    with pytest.raises(ValueError, match="not folders"):
+        bake.plan_job([str(tmp_path / "shoot")], "S0123-10")
+
+
+def test_plan_rejects_a_file_named_twice(tmp_path):
+    files = raws(tmp_path, 2)
+    with pytest.raises(ValueError, match="more than once"):
+        bake.plan_job(files + [files[0]], "S0123-10")
+
+
+def test_plan_rejects_a_non_raw(tmp_path):
+    files = raws(tmp_path, 2)
     jpg = tmp_path / "still.jpg"
     jpg.write_bytes(b"x")
-    found = bake.collect_raw_files([str(jpg)])
-    assert found == [str(jpg)]
+    with pytest.raises(ValueError, match="still.jpg"):
+        bake.plan_job(files + [str(jpg)], "S0123-10")
 
 
-def test_collect_recurses_only_when_asked(tmp_path):
-    raws(tmp_path, 3)
-    raws(tmp_path, 3, folder="sub")
-    assert len(bake.collect_raw_files([str(tmp_path)])) == 3
-    assert len(bake.collect_raw_files([str(tmp_path)], recursive=True)) == 6
-
-
-def test_collect_deduplicates_a_file_named_twice(tmp_path):
-    files = raws(tmp_path, 3)
-    found = bake.collect_raw_files([str(tmp_path), files[0]])
-    assert len(found) == 3
-
-
-# --------------------------------------------------------------------------- #
-# plan_jobs
-# --------------------------------------------------------------------------- #
-def test_plan_groups_in_filename_order_and_names_after_the_first_frame(tmp_path):
-    files = raws(tmp_path, 6)
-    jobs = bake.plan_jobs(files)
-    assert len(jobs) == 2
-    assert [os.path.basename(s) for s in jobs[0].sources] == \
-        ["img001.arw", "img002.arw", "img003.arw"]
-    assert os.path.basename(jobs[0].output) == "img001_RGB.dng"
-    assert os.path.basename(jobs[1].output) == "img004_RGB.dng"
-
-
-def test_plan_rejects_a_count_that_is_not_a_multiple_of_three(tmp_path):
-    with pytest.raises(ValueError, match="multiple of 3"):
-        bake.plan_jobs(raws(tmp_path, 4))
+def test_plan_rejects_a_missing_file(tmp_path):
+    files = raws(tmp_path, 2)
+    with pytest.raises(ValueError, match="no such file"):
+        bake.plan_job(files + [str(tmp_path / "img003.arw")], "S0123-10")
 
 
 def test_plan_writes_into_out_dir_when_given(tmp_path):
     files = raws(tmp_path, 3, folder="src")
     out = tmp_path / "merged"
-    jobs = bake.plan_jobs(files, out_dir=str(out))
-    assert os.path.dirname(jobs[0].output) == str(out)
+    job = bake.plan_job(files, "S0123-10", out_dir=str(out))
+    assert job.output == str(out / "S0123-10.dng")
 
 
-def test_plan_never_reuses_an_existing_filename(tmp_path):
+def test_plan_refuses_to_overwrite_an_existing_file(tmp_path):
     files = raws(tmp_path, 3)
-    (tmp_path / "img001_RGB.dng").write_bytes(b"already here")
-    jobs = bake.plan_jobs(files)
-    assert os.path.basename(jobs[0].output) == "img001_RGB_2.dng"
+    (tmp_path / "S0123-10.dng").write_bytes(b"already here")
+    with pytest.raises(ValueError, match="already exists"):
+        bake.plan_job(files, "S0123-10")
+    assert (tmp_path / "S0123-10.dng").read_bytes() == b"already here"
 
 
-def test_plan_reserves_names_so_two_folders_cannot_collide_in_one_out_dir(tmp_path):
-    files = raws(tmp_path, 3, folder="a") + raws(tmp_path, 3, folder="b")
-    jobs = bake.plan_jobs(files, out_dir=str(tmp_path / "merged"))
-    # Same basenames in both folders -> the second job must claim a new name.
-    assert len({j.output for j in jobs}) == 2
+@pytest.mark.parametrize("bad", ["", "   ", "a/b", ".", ".."])
+def test_plan_rejects_a_film_id_that_is_not_a_file_name(tmp_path, bad):
+    with pytest.raises(ValueError, match="film ID"):
+        bake.plan_job(raws(tmp_path, 3), bad)
+
+
+def test_the_film_id_is_trimmed(tmp_path):
+    job = bake.plan_job(raws(tmp_path, 3), "  S0123-10 ")
+    assert job.film_id == "S0123-10"
+    assert os.path.basename(job.output) == "S0123-10.dng"
 
 
 # --------------------------------------------------------------------------- #
-# run_jobs — the happy path and the written file
+# run_job — the happy path and the written file
 # --------------------------------------------------------------------------- #
 def test_run_writes_a_verified_uint16_rgb_dng(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    summary = bake.run_jobs(jobs)
-    assert len(summary.written) == 1 and not summary.failures
-    data = dng.read_linear_dng(jobs[0].output)
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10")
+    result = bake.run_job(job)
+    assert result.ok and result.size == (6, 8)
+    data = dng.read_linear_dng(job.output)
     assert data.shape == (6, 8, 3) and data.dtype == np.uint16
     assert data[0, 0, 0] == 1000 and data[0, 0, 2] == 3000
 
 
 def test_the_written_file_carries_the_freeccr_marker(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    bake.run_jobs(jobs)
-    assert dng.is_merge_dng(jobs[0].output)
-    with tifffile.TiffFile(jobs[0].output) as tf:
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10")
+    bake.run_job(job)
+    assert dng.is_merge_dng(job.output)
+    with tifffile.TiffFile(job.output) as tf:
         assert dng.FREECCR_MERGE_MARKER in tf.pages[0].tags["Software"].value
 
 
-def test_every_output_is_named_dng(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 6))
-    assert all(j.output.endswith(".dng") for j in jobs)
+def test_the_written_file_states_the_film_id_as_its_dc_identifier(
+        tmp_path, fake_decode):
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10")
+    bake.run_job(job)
+    with tifffile.TiffFile(job.output) as tf:
+        xmp = bytes(tf.pages[0].tags[700].value).decode("utf-8")
+    assert "<dc:identifier>S0123-10</dc:identifier>" in xmp
 
 
 def test_run_forwards_demosaic_and_light_order_to_the_decoder(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    bake.run_jobs(jobs, demosaic=False, light_order="BGR")
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10")
+    bake.run_job(job, demosaic=False, light_order="BGR")
     assert fake_decode.calls[0]["demosaic"] is False
     assert fake_decode.calls[0]["light_order"] == "BGR"
 
 
 def test_run_keeps_the_originals_by_default(tmp_path, fake_decode):
     files = raws(tmp_path, 3)
-    summary = bake.run_jobs(bake.plan_jobs(files))
-    assert summary.deleted == []
+    result = bake.run_job(bake.plan_job(files, "S0123-10"))
+    assert result.deleted == []
     assert all(os.path.exists(f) for f in files)
 
 
+def test_run_will_not_overwrite_a_file_that_appeared_after_planning(
+        tmp_path, fake_decode):
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10")
+    (tmp_path / "S0123-10.dng").write_bytes(b"got here first")
+    result = bake.run_job(job, delete_originals=True)
+    assert "already exists" in result.error and result.deleted == []
+    assert (tmp_path / "S0123-10.dng").read_bytes() == b"got here first"
+    assert fake_decode.calls == []
+
+
 # --------------------------------------------------------------------------- #
-# run_jobs — deletion safety
+# run_job — deletion safety
 # --------------------------------------------------------------------------- #
 def test_delete_originals_removes_the_sources_after_a_verified_write(tmp_path,
                                                                      fake_decode):
     files = raws(tmp_path, 3)
-    jobs = bake.plan_jobs(files)
-    summary = bake.run_jobs(jobs, delete_originals=True)
-    assert len(summary.deleted) == 3
+    job = bake.plan_job(files, "S0123-10")
+    result = bake.run_job(job, delete_originals=True)
+    assert len(result.deleted) == 3
     assert not any(os.path.exists(f) for f in files)
-    assert os.path.exists(jobs[0].output)
+    assert os.path.exists(job.output)
 
 
-def test_a_failed_triplet_keeps_its_sources_and_leaves_no_partial_file(tmp_path,
-                                                                       fake_decode):
-    files = raws(tmp_path, 6)
-    fake_decode.boom = "img005"                 # kills the SECOND triplet
-    jobs = bake.plan_jobs(files)
-    summary = bake.run_jobs(jobs, delete_originals=True)
-
-    assert len(summary.written) == 1 and len(summary.failures) == 1
-    # First triplet: baked and deleted. Second: untouched, no stray output.
-    assert not any(os.path.exists(f) for f in files[:3])
-    assert all(os.path.exists(f) for f in files[3:])
-    assert os.path.exists(jobs[0].output)
-    assert not os.path.exists(jobs[1].output)
-
-
-def test_a_source_shared_with_a_failed_triplet_is_never_deleted(tmp_path,
-                                                                fake_decode):
-    """Two jobs referencing the same files: the first succeeds, the second
-    fails. Nothing may be deleted — a frame's only copy is never orphaned by a
-    triplet that still needs it."""
+def test_a_failed_merge_keeps_its_sources_and_leaves_no_partial_file(tmp_path,
+                                                                     fake_decode):
     files = raws(tmp_path, 3)
-    good = bake.Job(sources=tuple(files), output=str(tmp_path / "good.dng"))
-    bad = bake.Job(sources=tuple(files), output=str(tmp_path / "bad.dng"))
-    fail_after = {"n": 0}
-    inner = fake_decode
-
-    def flaky(sources, **kw):
-        fail_after["n"] += 1
-        if fail_after["n"] == 2:
-            raise ValueError("simulated failure on the second job")
-        return inner(sources, **kw)
-
-    bake.merge_mod.merge_raw_channels = flaky
-    summary = bake.run_jobs([good, bad], delete_originals=True)
-
-    assert len(summary.written) == 1 and len(summary.failures) == 1
-    assert summary.deleted == []                  # every source is shared
+    fake_decode.boom = "img002"
+    job = bake.plan_job(files, "S0123-10")
+    result = bake.run_job(job, delete_originals=True)
+    assert not result.ok and result.deleted == []
     assert all(os.path.exists(f) for f in files)
+    assert not os.path.exists(job.output)
 
 
 def test_a_file_that_fails_verification_blocks_the_delete(tmp_path, fake_decode,
@@ -226,34 +209,19 @@ def test_a_file_that_fails_verification_blocks_the_delete(tmp_path, fake_decode,
     monkeypatch.setattr(bake.dng_mod, "verify_linear_dng",
                         lambda *a, **k: (_ for _ in ()).throw(
                             IOError("verification failed")))
-    summary = bake.run_jobs(bake.plan_jobs(files), delete_originals=True)
-    assert summary.deleted == [] and len(summary.failures) == 1
+    job = bake.plan_job(files, "S0123-10")
+    result = bake.run_job(job, delete_originals=True)
+    assert result.deleted == [] and not result.ok
     assert all(os.path.exists(f) for f in files)
-
-
-def test_cancel_deletes_nothing_and_removes_what_it_already_wrote(tmp_path,
-                                                                  fake_decode):
-    files = raws(tmp_path, 6)
-    jobs = bake.plan_jobs(files)
-    done = {"n": 0}
-
-    def progress(i, total, job):
-        done["n"] = i + 1
-
-    summary = bake.run_jobs(jobs, delete_originals=True, progress_cb=progress,
-                            cancel_flag=lambda: done["n"] >= 1)
-    assert summary.cancelled
-    assert summary.deleted == []
-    assert all(os.path.exists(f) for f in files)
-    assert not any(os.path.exists(j.output) for j in jobs)
+    assert not os.path.exists(job.output)
 
 
 def test_dry_run_touches_nothing(tmp_path, fake_decode):
     files = raws(tmp_path, 3)
-    jobs = bake.plan_jobs(files)
-    summary = bake.run_jobs(jobs, delete_originals=True, dry_run=True)
-    assert len(summary.results) == 1 and summary.deleted == []
-    assert not os.path.exists(jobs[0].output)
+    job = bake.plan_job(files, "S0123-10")
+    result = bake.run_job(job, delete_originals=True, dry_run=True)
+    assert result.ok and result.deleted == []
+    assert not os.path.exists(job.output)
     assert all(os.path.exists(f) for f in files)
     assert fake_decode.calls == []                # no decode was attempted
 
@@ -262,9 +230,9 @@ def test_dry_run_touches_nothing(tmp_path, fake_decode):
 # the written file's own guards
 # --------------------------------------------------------------------------- #
 def test_verify_rejects_a_wrong_sized_file(tmp_path, fake_decode):
-    jobs = bake.plan_jobs(raws(tmp_path, 3))
-    bake.run_jobs(jobs)
-    out = jobs[0].output
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10")
+    bake.run_job(job)
+    out = job.output
     dng.verify_linear_dng(out, expect_shape=(6, 8))
     with pytest.raises(IOError):
         dng.verify_linear_dng(out, expect_shape=(6, 9))

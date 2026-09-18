@@ -100,7 +100,8 @@ claim about.
 
 XMP is not copied. Unlike EXIF it is not a record of the exposure but a record
 of EDITS — crop, white balance, tone, develop settings keyed to the source's
-raw pipeline — and those describe a different image than the merge.
+raw pipeline — and those describe a different image than the merge. The
+merged file's only XMP is the film ID dng.py writes.
 
 How it gets in
 --------------
