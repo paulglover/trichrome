@@ -10,13 +10,19 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
         # Ends of the range declared in pyproject.toml (requires-python >=3.9)
         # plus one in the middle.
         python-version: ["3.9", "3.11", "3.13"]
+        # ubuntu-latest moved to 26.04, which setup-python has no 3.9 build
+        # for, so the bottom of the range runs on the last image that does.
+        # When 24.04 is retired, 3.9 goes with it: raise requires-python.
+        include:
+          - python-version: "3.9"
+            runner: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v5
