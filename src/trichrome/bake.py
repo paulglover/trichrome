@@ -5,15 +5,17 @@ and (opt-in) permanently delete the three source RAWs.
 One output format: a linear DNG (dng.py), which a converter opens through its
 RAW pipeline and which carries the triplet's first frame's camera metadata, so
 that deleting the originals does not take the capture data with them. It is
-named after the film ID, which is also written into it as XMP dc:identifier.
+named after the film ID, which is also written into it as XMP dc:identifier —
+or, when the caller names the file itself, after that name. The film ID is then
+optional, and a merge without one carries no XMP at all.
 
 Deletion safety is the whole point of this module, so the rules are explicit:
 
 * A source RAW is deleted ONLY after its replacement exists on disk and reads
   back as a valid uint16 RGB image of the expected size.
 * If the merge fails, nothing is deleted and no partial file is left behind.
-* An existing file is never overwritten: planning refuses a film ID whose
-  output is already there, and the write checks again.
+* An existing file is never overwritten: planning refuses an output that is
+  already there, and the write checks again.
 * `dry_run` decodes and merges nothing, deletes nothing — it just reports the
   plan.
 """
@@ -29,7 +31,7 @@ from . import merge as merge_mod
 class Job:
     """One planned merge: three source RAWs → one output file."""
     sources: Tuple[str, str, str]
-    film_id: str
+    film_id: Optional[str]          # None: no XMP dc:identifier is written
     output: str
 
     @property
@@ -55,41 +57,73 @@ class JobResult:
         return self.error is None
 
 
+def _validate_file_name(value: str, what: str) -> str:
+    """`value`, stripped of surrounding whitespace, once it is known to be
+    usable as a file name; `what` names it in the error. Raises ValueError when
+    it is not: blank, a path rather than a name, or a name the filesystem
+    reserves."""
+    value = value.strip()
+    if not value:
+        raise ValueError(f"the {what} is blank — it names the merged file, so "
+                         "it cannot be")
+    if "/" in value or "\0" in value:
+        raise ValueError(f"{what} {value!r} contains a '/' — it is a file "
+                         "name, not a path (use --out to choose the folder)")
+    if value in (".", ".."):
+        raise ValueError(f"{what} {value!r} is not a usable file name")
+    return value
+
+
 def validate_film_id(film_id: Optional[str]) -> str:
     """The film ID, stripped of surrounding whitespace, once it is known to be
     usable as a file name. Raises ValueError when it is not: blank, a path
     rather than a name, or a name the filesystem reserves."""
-    fid = (film_id or "").strip()
-    if not fid:
-        raise ValueError("the film ID is blank — it names the merged file, so "
-                         "it cannot be")
-    if "/" in fid or "\0" in fid:
-        raise ValueError(f"film ID {fid!r} contains a '/' — it is a file name, "
-                         "not a path (use --out to choose the folder)")
-    if fid in (".", ".."):
-        raise ValueError(f"film ID {fid!r} is not a usable file name")
-    return fid
+    return _validate_file_name(film_id or "", "film ID")
 
 
-def output_path(film_id: str, first_source: str,
+def validate_name(name: str) -> str:
+    """An explicit name for the merged file, without its extension — a
+    trailing `.dng` is dropped rather than doubled. Validated as a film ID
+    is."""
+    name = name.strip()
+    ext = dng_mod.OUTPUT_EXTENSION
+    if name.lower().endswith(ext.lower()):
+        name = name[:-len(ext)]
+    return _validate_file_name(name, "file name")
+
+
+def output_path(name: str, first_source: str,
                 out_dir: Optional[str] = None) -> str:
-    """Where the merge is written: `FILMID.dng`, beside the first frame unless
+    """Where the merge is written: `NAME.dng`, beside the first frame unless
     `out_dir` says otherwise."""
     directory = out_dir if out_dir else os.path.dirname(
         os.path.abspath(first_source))
     return os.path.join(os.path.abspath(os.path.expanduser(directory)),
-                        film_id + dng_mod.OUTPUT_EXTENSION)
+                        name + dng_mod.OUTPUT_EXTENSION)
 
 
-def plan_job(paths: Sequence[str], film_id: str,
-             out_dir: Optional[str] = None) -> Job:
+def plan_job(paths: Sequence[str], film_id: Optional[str] = None,
+             out_dir: Optional[str] = None,
+             name: Optional[str] = None) -> Job:
     """Sort and validate exactly three RAW files, and settle the output path.
+
+    The file is `NAME.dng` when `name` is given, else `FILMID.dng`; one of the
+    two is required. The film ID, when given, is also written into the file.
 
     Raises ValueError with a user-facing message when they cannot be merged:
     not exactly three files, a folder among them, a file that is not a
-    supported RAW or is itself a merge, a film ID that is not a usable file
-    name, or an output that already exists."""
-    fid = validate_film_id(film_id)
+    supported RAW or is itself a merge, neither a film ID nor a name, either of
+    them not a usable file name, or an output that already exists."""
+    # A film ID that was passed is validated even when `name` names the file:
+    # it is still written into it, and a blank one is a mistake, not "none".
+    fid = validate_film_id(film_id) if film_id is not None else None
+    if name is not None:
+        stem = validate_name(name)
+    elif fid is not None:
+        stem = fid
+    else:
+        raise ValueError("give a film ID (-i) or a file name (--name) — one "
+                         "of them names the merged file")
     folders = [p for p in paths if os.path.isdir(p)]
     if folders:
         raise ValueError("trichrome takes three RAW files, not folders: "
@@ -115,10 +149,10 @@ def plan_job(paths: Sequence[str], film_id: str,
         raise ValueError("already a trichrome merge, not a source frame: "
                          + ", ".join(os.path.basename(p) for p in merges))
 
-    out = output_path(fid, ordered[0], out_dir)
+    out = output_path(stem, ordered[0], out_dir)
     if os.path.exists(out):
         raise ValueError(f"{out} already exists — not overwriting it. Choose "
-                         "another film ID or output folder, or move the "
+                         "another name or output folder, or move the "
                          "existing file")
     return Job(sources=tuple(ordered), film_id=fid, output=out)
 

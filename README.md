@@ -4,7 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/paulglover/trichrome?label=release)](https://github.com/paulglover/trichrome/releases)
 
 Merge a red/green/blue-light RAW triplet into one 16-bit **linear DNG**, named
-after its film ID, then (optionally) delete the source RAWs.
+after its film ID (or a name you give it), then (optionally) delete the source
+RAWs.
 
 You shoot one static scene three times — once under a pure red light, once
 green, once blue. This tool takes those three RAWs and builds one full-colour
@@ -33,6 +34,7 @@ trichrome -i S0123-10 img001.arw img002.arw img003.arw           # -> S0123-10.d
 trichrome -i S0123-10 img00[1-3].arw --out ./merged              # write it somewhere else
 trichrome -i S0123-10 img00[1-3].arw --dry-run                   # plan only, decode nothing
 trichrome -i S0123-10 img00[1-3].arw --delete-originals          # destructive; no prompt
+trichrome --name 20260104-scan img00[1-3].arw                    # no film ID -> 20260104-scan.dng
 ```
 
 ```
@@ -51,7 +53,8 @@ light — and writes **one** DNG. Folders are not accepted.
 
 | Flag | Meaning |
 | --- | --- |
-| `-i, --filmid FILMID` | **required.** The merged file is `FILMID.dng`, and the ID is written into its XMP `dc:identifier` |
+| `-i, --filmid FILMID` | The merged file is `FILMID.dng`, and the ID is written into its XMP `dc:identifier`. Required unless `--name` is given |
+| `--name NAME` | name the merged file `NAME.dng` instead (a trailing `.dng` is not doubled). The film ID becomes optional; without one the file carries no XMP |
 | `-o, --out DIR` | write the merged file here instead of beside the first frame |
 | `--order RGB` | which light each frame was shot under, in filename order — `BGR` if you shot blue first |
 | `--demosaic` / `--photosite` | see *Two ways to extract a channel* below (default `--demosaic`) |
@@ -61,7 +64,8 @@ light — and writes **one** DNG. Folders are not accepted.
 The three files are ordered by **filename** (directory ignored,
 case-insensitive), so the order they are given in does not matter. Every file
 must be a supported RAW, and the output must not already exist, or nothing runs.
-The film ID is a file name, not a path: it cannot be blank or contain a `/`.
+The film ID and the name are file names, not paths: neither can be blank or
+contain a `/`.
 
 Supported RAW: `.cr3 .cr2 .nef .arw .dng .rw2 .orf .raf .srw .pef .3fr`.
 
@@ -219,7 +223,8 @@ A few things are deliberately **not** carried:
   (above) and the rest stays behind.
 * **XMP.** It records *edits* — crop, white balance, develop settings keyed to
   the source's raw pipeline — which describe a different image than the merge.
-  The merged file's only XMP is the film ID, as `dc:identifier`.
+  The merged file's only XMP is the film ID, as `dc:identifier` — and a merge
+  made without one has none.
 * **`PixelXDimension` / `PixelYDimension`**, which are restated for the merged
   image rather than copied; a `--photosite` merge is half the source's size.
 * **`ColorSpace`**, restated as `Uncalibrated`. The source's sRGB is true of its
@@ -275,8 +280,8 @@ refused: a file carrying the merge marker is not a source frame, and with
   whose data did not must fail).
 * If the merge fails, none of the sources are deleted, and it leaves no partial
   file behind.
-* An existing file is **never** overwritten: if `FILMID.dng` is already there,
-  nothing runs.
+* An existing file is **never** overwritten: if `FILMID.dng` (or `NAME.dng`) is
+  already there, nothing runs.
 * There is no confirmation prompt: passing the flag is the confirmation. Use
   `--dry-run` first to see exactly which files a run would delete.
 
@@ -313,7 +318,8 @@ print(result.job.output if result.ok else result.error)
 ```
 
 `plan_job` validates the three files and the film ID and settles the output
-path, raising `ValueError` with a message meant for a person when they cannot be
+path — `plan_job(files, name="20260104-scan")` names the file without a film
+ID — raising `ValueError` with a message meant for a person when they cannot be
 merged; `run_job` writes what the plan says and never raises.
 
 `write_linear_dng(path, merged, source=first_raw, identifier=film_id)` is what

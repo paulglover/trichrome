@@ -123,7 +123,7 @@ The film ID
 `identifier=` is written as the file's only XMP: a packet stating it as
 `dc:identifier`, so a catalogue that has renamed or moved the file can still say
 which film it is. The sources' own XMP is not carried (exif.py says why), so
-there is nothing for this to be merged with.
+there is nothing for this to be merged with. A merge with no film ID has no XMP.
 
 It is best-effort by design. A source whose metadata cannot be read still gets
 merged and still gets written; the writer returns a warning instead of raising,
