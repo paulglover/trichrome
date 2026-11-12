@@ -5,10 +5,12 @@ Command-line interface.
     trichrome -i S0123-10 img00[1-3].arw --out ./merged
     trichrome -i S0123-10 img00[1-3].arw --delete-originals  # destructive; no prompt
     trichrome -i S0123-10 img00[1-3].arw --dry-run           # show the plan only
+    trichrome --name 20260104-scan img00[1-3].arw            # no film ID
 
 Exactly three RAW files, the frames of one shot, one per light. They are merged
 into one linear DNG named FILMID.dng, written beside the first frame unless
 `--out` says otherwise, with the film ID also stated as its XMP dc:identifier.
+`--name` names the file instead, and makes the film ID optional.
 Selection order does not matter: the frames are taken in filename order.
 """
 import argparse
@@ -21,10 +23,11 @@ from . import merge as merge_mod
 
 
 def cmd_merge(args) -> int:
-    job = bake_mod.plan_job(args.inputs, args.film_id, out_dir=args.out)
+    job = bake_mod.plan_job(args.inputs, args.film_id, out_dir=args.out,
+                            name=args.name)
     mode = "demosaic (full resolution)" if args.demosaic else \
            "single photosite (half resolution)"
-    print(f"{job.film_id}: light order {args.order.upper()} · {mode}"
+    print(f"{job.film_id or job.name}: light order {args.order.upper()} · {mode}"
           f" · linear DNG")
     print("  " + " + ".join(os.path.basename(s) for s in job.sources))
     print(f"  -> {job.output}", flush=True)
@@ -47,7 +50,7 @@ def cmd_merge(args) -> int:
     if r.warning:
         print(f"WARNING {job.name}: {r.warning}", file=sys.stderr)
     if r.error:
-        print(f"FAILED {job.film_id}: {r.error}", file=sys.stderr)
+        print(f"FAILED {job.film_id or job.name}: {r.error}", file=sys.stderr)
     for path, reason in r.delete_errors:
         print(f"NOT DELETED {os.path.basename(path)}: {reason}", file=sys.stderr)
 
@@ -70,9 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("inputs", nargs="+", metavar="RAW",
                    help="the three RAW frames of one shot, one per light")
     p.add_argument("-i", "--filmid", "--film-id", dest="film_id",
-                   required=True, metavar="FILMID",
+                   metavar="FILMID",
                    help="the film ID: the merged file is FILMID.dng, and the "
-                        "ID is written into its XMP dc:identifier")
+                        "ID is written into its XMP dc:identifier. Required "
+                        "unless --name is given")
+    p.add_argument("--name", metavar="NAME",
+                   help="name the merged file NAME.dng instead of after the "
+                        "film ID, which then becomes optional")
     p.add_argument("-o", "--out", metavar="DIR",
                    help="write the merged file here (default: beside the "
                         "first frame)")

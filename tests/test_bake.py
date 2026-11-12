@@ -120,6 +120,46 @@ def test_plan_rejects_a_film_id_that_is_not_a_file_name(tmp_path, bad):
         bake.plan_job(raws(tmp_path, 3), bad)
 
 
+def test_plan_needs_a_film_id_or_a_name(tmp_path):
+    with pytest.raises(ValueError, match="--name"):
+        bake.plan_job(raws(tmp_path, 3))
+
+
+def test_plan_names_the_file_without_a_film_id(tmp_path):
+    job = bake.plan_job(raws(tmp_path, 3), name="20260104-120000-000123")
+    assert job.output == str(tmp_path / "20260104-120000-000123.dng")
+    assert job.film_id is None
+
+
+def test_a_name_wins_over_the_film_id_and_keeps_it(tmp_path):
+    job = bake.plan_job(raws(tmp_path, 3), "S0123-10", name="scan")
+    assert job.output == str(tmp_path / "scan.dng")
+    assert job.film_id == "S0123-10"
+
+
+@pytest.mark.parametrize("given", ["scan.dng", "scan.DNG", " scan "])
+def test_a_name_s_extension_is_not_doubled_and_it_is_trimmed(tmp_path, given):
+    job = bake.plan_job(raws(tmp_path, 3), name=given)
+    assert os.path.basename(job.output) == "scan.dng"
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "a/b", ".", "..", ".dng"])
+def test_plan_rejects_a_name_that_is_not_a_file_name(tmp_path, bad):
+    with pytest.raises(ValueError, match="file name"):
+        bake.plan_job(raws(tmp_path, 3), name=bad)
+
+
+def test_a_blank_film_id_is_refused_even_with_a_name(tmp_path):
+    with pytest.raises(ValueError, match="film ID"):
+        bake.plan_job(raws(tmp_path, 3), "  ", name="scan")
+
+
+def test_a_named_existing_output_is_refused(tmp_path):
+    (tmp_path / "scan.dng").write_bytes(b"already here")
+    with pytest.raises(ValueError, match="already exists"):
+        bake.plan_job(raws(tmp_path, 3), name="scan")
+
+
 def test_the_film_id_is_trimmed(tmp_path):
     job = bake.plan_job(raws(tmp_path, 3), "  S0123-10 ")
     assert job.film_id == "S0123-10"
@@ -153,6 +193,13 @@ def test_the_written_file_states_the_film_id_as_its_dc_identifier(
     with tifffile.TiffFile(job.output) as tf:
         xmp = bytes(tf.pages[0].tags[700].value).decode("utf-8")
     assert "<dc:identifier>S0123-10</dc:identifier>" in xmp
+
+
+def test_a_merge_without_a_film_id_carries_no_xmp(tmp_path, fake_decode):
+    job = bake.plan_job(raws(tmp_path, 3), name="scan")
+    assert bake.run_job(job).ok
+    with tifffile.TiffFile(job.output) as tf:
+        assert 700 not in tf.pages[0].tags
 
 
 def test_run_forwards_demosaic_and_light_order_to_the_decoder(tmp_path, fake_decode):

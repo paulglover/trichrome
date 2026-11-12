@@ -34,11 +34,25 @@ def test_the_long_film_id_option_is_filmid(tmp_path, fake_decode):
     assert os.path.exists(str(tmp_path / "S0123-10.dng"))
 
 
-def test_the_film_id_is_required(tmp_path, capsys):
-    with pytest.raises(SystemExit) as e:
-        cli.main(raws(tmp_path, 3))
-    assert e.value.code == 2
-    assert "-i/--filmid" in capsys.readouterr().err
+def test_a_film_id_or_a_name_is_required(tmp_path, capsys, fake_decode):
+    assert cli.main(raws(tmp_path, 3)) == 2
+    assert "--name" in capsys.readouterr().err
+    assert fake_decode.calls == []
+
+
+def test_name_writes_name_dng_without_a_film_id(tmp_path, capsys, fake_decode):
+    files = raws(tmp_path, 3)
+    assert cli.main(["--name", "20260104-120000-000123", *files]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("20260104-120000-000123.dng: light order")
+    assert os.path.exists(str(tmp_path / "20260104-120000-000123.dng"))
+
+
+def test_name_wins_over_the_film_id_for_the_file_name(tmp_path, fake_decode):
+    files = raws(tmp_path, 3)
+    assert cli.main(["-i", "S0123-10", "--name", "scan", *files]) == 0
+    assert os.path.exists(str(tmp_path / "scan.dng"))
+    assert not os.path.exists(str(tmp_path / "S0123-10.dng"))
 
 
 def test_out_writes_elsewhere(tmp_path, fake_decode):
